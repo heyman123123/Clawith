@@ -861,6 +861,90 @@ async def get_ai_operations(
     }
 
 
+@router.get("/ai-operations/runs/{run_id}")
+async def get_ai_operation_run_detail(
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Expose tenant-scoped, sanitised runtime evidence for failure diagnosis."""
+    if current_user.tenant_id is None:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    row = await db.execute(
+        select(AgentRun, Agent, LLMModel)
+        .outerjoin(Agent, Agent.id == AgentRun.agent_id)
+        .outerjoin(LLMModel, LLMModel.id == AgentRun.model_id)
+        .where(AgentRun.id == run_id, AgentRun.tenant_id == current_user.tenant_id)
+    )
+    run, agent, model = row.one_or_none() or (None, None, None)
+    if run is None:
+        raise HTTPException(status_code=404, detail="AI run not found")
+    event_rows = (
+        await db.execute(
+            select(AgentRunEvent)
+            .where(
+                AgentRunEvent.tenant_id == current_user.tenant_id,
+                AgentRunEvent.run_id == run_id,
+            )
+            .order_by(AgentRunEvent.created_at.asc(), AgentRunEvent.id.asc())
+        )
+    ).scalars().all()
+    timeline: list[dict] = []
+    return_parts: list[str] = []
+    context_parts = [f"运行目标：\n{run.goal}"]
+    failure: dict | None = None
+    for event in event_rows:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        activity_type = payload.get("activity_type")
+        content = payload.get("content") if isinstance(payload.get("content"), str) else None
+        result = payload.get("result") if isinstance(payload.get("result"), str) else None
+        if activity_type == "assistant_progress" and content:
+            return_parts.append(content)
+        elif activity_type == "thinking" and content:
+            # This is the structured runtime reasoning stream, not a raw model
+            # request. It is useful for diagnosis and never includes credentials.
+            context_parts.append(f"推理片段：\n{content}")
+        if event.event_type == "run_failed":
+            failure = {
+                "error_code": payload.get("error_code") or payload.get("failure_code") or "runtime_failed",
+                "error_message": (
+                    payload.get("error_message")
+                    or payload.get("failure_message")
+                    or payload.get("reason")
+                    or event.summary
+                ),
+                "created_at": event.created_at.isoformat(),
+            }
+        timeline.append(
+            {
+                "created_at": event.created_at.isoformat(),
+                "event_type": event.event_type,
+                "summary": event.summary,
+                "activity_type": activity_type,
+                "content": content,
+                "tool_name": payload.get("name"),
+                "tool_arguments": payload.get("args") if activity_type == "tool_call" else None,
+                "tool_result": result,
+                "error_code": payload.get("error_code") or payload.get("failure_code"),
+            }
+        )
+    return {
+        "run": {
+            "id": str(run.id),
+            "goal": run.goal,
+            "source_type": run.source_type,
+            "created_at": run.created_at.isoformat(),
+            "agent_name": agent.name if agent is not None else "群组规划器",
+            "model_name": (model.label or model.model) if model is not None else "未记录模型",
+            "provider": model.provider if model is not None else "unknown",
+        },
+        "failure": failure,
+        "input_context": "\n\n".join(context_parts),
+        "return_content": "\n\n".join(return_parts) or None,
+        "timeline": timeline,
+    }
+
+
 # ─── Tenant Quota Settings ──────────────────────────────
 
 from app.models.tenant import Tenant

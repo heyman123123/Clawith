@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
     IconActivityHeartbeat, IconAlertTriangle, IconArrowUpRight, IconChartBar,
-    IconFileAnalytics, IconRefresh, IconRobot, IconSparkles, IconTarget,
+    IconFileAnalytics, IconRefresh, IconRobot, IconSparkles, IconTarget, IconX,
 } from '@tabler/icons-react';
 import { aiOperationsApi } from '../services/aiOperationsApi';
 
@@ -27,11 +27,17 @@ function Metric({ label, value, accent, detail }: { label: string; value: string
 
 export default function AIOperations() {
     const [days, setDays] = useState<7 | 30 | 90>(30);
+    const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
     const navigate = useNavigate();
     const { data, isLoading, isFetching, error, refetch } = useQuery({
         queryKey: ['ai-operations', days],
         queryFn: () => aiOperationsApi.get(days),
         refetchInterval: 60_000,
+    });
+    const runDetail = useQuery({
+        queryKey: ['ai-operation-run-detail', selectedRunId],
+        queryFn: () => aiOperationsApi.runDetail(selectedRunId!),
+        enabled: selectedRunId !== null,
     });
 
     if (isLoading) return <div style={styles.loading}>正在读取 AI 运行账本…</div>;
@@ -93,7 +99,7 @@ export default function AIOperations() {
         <section style={styles.grid}>
             <div style={styles.panel}>
                 <div style={styles.panelHeader}><div><span style={styles.sectionKicker}>故障雷达</span><h2 style={styles.panelTitle}>最近失败效果</h2></div><IconAlertTriangle size={20} color="#ff7a71" /></div>
-                <div style={styles.feed}>{data.failures.length ? data.failures.slice(0, 6).map((failure) => <button key={failure.run_id} onClick={() => failure.agent_id && navigate(`/agents/${failure.agent_id}`)} style={styles.failureRow}>
+                <div style={styles.feed}>{data.failures.length ? data.failures.slice(0, 6).map((failure) => <button key={failure.run_id} onClick={() => setSelectedRunId(failure.run_id)} style={styles.failureRow}>
                     <span style={styles.failureDot} /><div style={{ minWidth: 0, flex: 1 }}><strong style={styles.ellipsis}>{failure.agent_name}</strong><p style={styles.ellipsis}>{failure.error_code} · {failure.goal}</p><small>{relativeTime(failure.created_at)} · {failure.model_name}</small></div><IconArrowUpRight size={16} color="#9fb0b7" />
                 </button>) : <Empty text="太好了，本周期没有失败 Run。" />}</div>
             </div>
@@ -110,11 +116,29 @@ export default function AIOperations() {
             <div style={styles.agentTable}>{data.agents.length ? data.agents.slice(0, 8).map((agent) => <button key={agent.agent_id || agent.agent_name} onClick={() => agent.agent_id && navigate(`/agents/${agent.agent_id}`)} style={styles.agentRow}>
                 <span style={styles.agentAvatar}>{agent.agent_name.slice(0, 1)}</span><strong>{agent.agent_name}</strong><span>{agent.total} 次运行</span><div style={styles.track}><i style={{ width: `${agent.success_rate}%`, background: agent.success_rate >= 90 ? '#37d7a5' : '#f7bd5e' }} /></div><b>{agent.success_rate}%</b><IconArrowUpRight size={15} color="#9fb0b7" />
             </button>) : <Empty text="开始运行 AI 任务后，这里将显示交付排行。" />}</div>
-        </section>
-    </main>;
+            </section>
+            {selectedRunId && <div style={styles.dialogBackdrop} role="presentation" onMouseDown={() => setSelectedRunId(null)}>
+                <section role="dialog" aria-modal="true" aria-label="AI 运行诊断详情" style={styles.dialog} onMouseDown={(event) => event.stopPropagation()}>
+                    <div style={styles.dialogHeader}><div><span style={styles.sectionKicker}>Failure dossier</span><h2 style={{ ...styles.panelTitle, marginTop: 5 }}>AI 运行诊断详情</h2></div><button style={styles.dialogClose} onClick={() => setSelectedRunId(null)} aria-label="关闭"><IconX size={17} /></button></div>
+                    {runDetail.isLoading && <div style={styles.empty}>正在读取运行上下文与返回记录…</div>}
+                    {runDetail.error && <div style={{ ...styles.empty, color: '#f27f77' }}>诊断详情读取失败，请刷新后重试。</div>}
+                    {runDetail.data && <div style={styles.dossier}>
+                        <div style={styles.dossierMeta}><span>{runDetail.data.run.agent_name}</span><span>{runDetail.data.run.model_name}</span><span>{runDetail.data.run.source_type}</span></div>
+                        <div style={styles.errorCallout}><IconAlertTriangle size={18} /><div><strong>{runDetail.data.failure?.error_code || '运行失败'}</strong><p>{runDetail.data.failure?.error_message || '未记录具体错误。'}</p></div></div>
+                        <DossierBlock title="输入上下文（已隐藏密钥）" content={runDetail.data.input_context} />
+                        <DossierBlock title="模型返回内容" content={runDetail.data.return_content || '失败前未产生可展示的模型返回内容。'} />
+                        <div><span style={styles.dossierLabel}>运行时间线</span><div style={styles.timeline}>{runDetail.data.timeline.map((event, index) => <details key={`${event.created_at}-${index}`} style={styles.timelineItem}><summary><span>{relativeTime(event.created_at)}</span>{event.summary}</summary><pre>{JSON.stringify(event, null, 2)}</pre></details>)}</div></div>
+                    </div>}
+                </section>
+            </div>}
+        </main>;
 }
 
 function Empty({ text }: { text: string }) { return <div style={styles.empty}>{text}</div>; }
+
+function DossierBlock({ title, content }: { title: string; content: string }) {
+    return <div><span style={styles.dossierLabel}>{title}</span><pre style={styles.dossierCode}>{content}</pre></div>;
+}
 
 const styles: Record<string, CSSProperties> = {
     page: { maxWidth: 1240, margin: '0 auto', padding: '34px 30px 64px', color: 'var(--text-primary)' },
@@ -134,4 +158,15 @@ const styles: Record<string, CSSProperties> = {
     feed: { marginTop: 12 }, failureRow: { width: '100%', display: 'flex', alignItems: 'center', gap: 9, textAlign: 'left', padding: '11px 0', border: 0, borderBottom: '1px solid var(--border)', background: 'transparent', color: 'inherit', cursor: 'pointer' }, failureDot: { width: 7, height: 7, borderRadius: '50%', flex: '0 0 auto', background: '#f27f77', boxShadow: '0 0 0 4px rgba(242,127,119,.11)' }, reportList: { marginTop: 12 }, reportRow: { width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '10px 0', textAlign: 'left', border: 0, borderBottom: '1px solid var(--border)', background: 'transparent', color: 'inherit', cursor: 'pointer' }, reportIcon: { width: 29, height: 29, display: 'grid', placeItems: 'center', borderRadius: 8, color: '#a57df0', background: 'rgba(165,125,240,.12)' }, reportTime: { color: 'var(--text-tertiary)', fontSize: 11, whiteSpace: 'nowrap' },
     agentTable: { marginTop: 13 }, agentRow: { width: '100%', display: 'grid', gridTemplateColumns: '28px minmax(110px, 1fr) 84px minmax(80px, 1fr) 48px 16px', alignItems: 'center', gap: 12, padding: '10px 0', border: 0, borderBottom: '1px solid var(--border)', background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer', fontSize: 12 }, agentAvatar: { width: 28, height: 28, display: 'grid', placeItems: 'center', borderRadius: 8, color: '#d7f5ef', background: '#276760', fontWeight: 800 }, track: { height: 5, overflow: 'hidden', borderRadius: 8, background: 'rgba(119, 149, 154, .18)' },
     empty: { padding: '32px 0', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 13 },
+    dialogBackdrop: { position: 'fixed', zIndex: 80, inset: 0, display: 'grid', placeItems: 'center', padding: 24, background: 'rgba(4, 17, 20, .6)', backdropFilter: 'blur(7px)' },
+    dialog: { width: 'min(860px, 100%)', maxHeight: 'min(760px, calc(100vh - 48px))', overflow: 'auto', padding: 24, border: '1px solid rgba(116, 205, 188, .35)', borderRadius: 18, color: 'var(--text-primary)', background: 'var(--bg-card)', boxShadow: '0 28px 90px rgba(0, 0, 0, .42)' },
+    dialogHeader: { display: 'flex', alignItems: 'start', justifyContent: 'space-between', gap: 14, paddingBottom: 17, borderBottom: '1px solid var(--border)' },
+    dialogClose: { width: 32, height: 32, display: 'grid', placeItems: 'center', border: '1px solid var(--border)', borderRadius: 9, background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' },
+    dossier: { display: 'grid', gap: 17, paddingTop: 17 },
+    dossierMeta: { display: 'flex', flexWrap: 'wrap', gap: 7, color: '#7d989c', fontSize: 11 },
+    errorCallout: { display: 'flex', alignItems: 'start', gap: 10, padding: '13px 14px', borderRadius: 11, color: '#ffc0bb', background: 'rgba(242, 127, 119, .11)', border: '1px solid rgba(242, 127, 119, .24)' },
+    dossierLabel: { display: 'block', marginBottom: 7, color: '#6d8990', textTransform: 'uppercase', fontSize: 10, fontWeight: 800, letterSpacing: '.11em' },
+    dossierCode: { maxHeight: 210, overflow: 'auto', margin: 0, padding: 13, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', font: '12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace' },
+    timeline: { display: 'grid', gap: 7 },
+    timelineItem: { border: '1px solid var(--border)', borderRadius: 9, padding: '9px 11px', color: 'var(--text-secondary)', fontSize: 12 },
 };

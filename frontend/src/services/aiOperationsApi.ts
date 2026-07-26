@@ -10,6 +10,33 @@ export type AiOperationsData = {
     reports: Array<{ run_id: string; agent_id: string | null; agent_name: string; title: string; report_type: string; created_at: string }>;
 };
 
+export type AiOperationRunDetail = {
+    run: {
+        id: string;
+        goal: string;
+        source_type: string;
+        created_at: string;
+        agent_name: string;
+        model_name: string;
+        provider: string;
+    };
+    failure: { error_code: string; error_message: string; created_at: string } | null;
+    input_context: string;
+    return_content: string | null;
+    timeline: Array<{
+        created_at: string;
+        event_type: string;
+        summary: string;
+        activity_type: string | null;
+        content: string | null;
+        tool_name: string | null;
+        tool_arguments: unknown;
+        tool_result: string | null;
+        error_code: string | null;
+    }>;
+};
+
 export const aiOperationsApi = {
     get: (days: 7 | 30 | 90) => fetchJson<AiOperationsData>(`/enterprise/ai-operations?days=${days}`),
+    runDetail: (runId: string) => fetchJson<AiOperationRunDetail>(`/enterprise/ai-operations/runs/${runId}`),
 };

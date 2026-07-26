@@ -30,8 +30,15 @@ export interface ProjectWorkflow {
     status: 'planning' | 'provisioning' | 'active' | 'failed' | string;
     team_plan: TeamPlan;
     group_id: string | null;
+    decision_group_id: string | null;
     group_leader_agent_id: string | null;
     failure_reason: string | null;
     created_at: string;
     members: ProjectWorkflowMember[];
+}
+
+export interface ShareholderGroup {
+    group_id: string;
+    name: string;
+    created_at: string;
 }

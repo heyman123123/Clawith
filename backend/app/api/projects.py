@@ -9,18 +9,24 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
 from app.models.chat_session import ChatSession
-from app.models.group import GroupMember
+from app.models.group import Group, GroupMember
 from app.models.org import AgentAgentRelationship
 from app.models.participant import Participant
-from app.models.project import ProjectDecision, ProjectWorkflow, ProjectWorkflowMember
-from app.models.task import Task
+from app.models.project import (
+    ProjectDecision,
+    ProjectWorkflow,
+    ProjectWorkflowMember,
+    ShareholderDispatch,
+    ShareholderGroup,
+)
+from app.models.task import Task, TaskLog
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import group_chat_service
@@ -86,6 +92,7 @@ class ProjectOut(BaseModel):
     status: str
     team_plan: dict
     group_id: uuid.UUID | None
+    decision_group_id: uuid.UUID | None
     group_leader_agent_id: uuid.UUID | None
     failure_reason: str | None
     created_at: datetime
@@ -105,6 +112,30 @@ class ProjectTaskOut(BaseModel):
     is_project_closure: bool
     completed_at: datetime | None
     updated_at: datetime | None
+
+
+class ProjectBoardTaskOut(ProjectTaskOut):
+    latest_outcome: str | None = None
+
+
+class ProjectBlockerOut(BaseModel):
+    task_id: uuid.UUID
+    title: str
+    agent_name: str
+    status: str
+    reason: str | None = None
+
+
+class ProjectGroupOverviewOut(BaseModel):
+    project_name: str
+    total_tasks: int
+    completed_tasks: int
+    active_tasks: int
+    blocked_tasks: int
+    failed_tasks: int
+    progress_percent: int
+    tasks: list[ProjectBoardTaskOut]
+    blockers: list[ProjectBlockerOut]
 
 
 class ProjectDecisionReplyIn(BaseModel):
@@ -135,6 +166,42 @@ class ProjectDecisionOut(BaseModel):
     responded_at: datetime | None
 
 
+class ShareholderGroupOut(BaseModel):
+    group_id: uuid.UUID
+    name: str
+    created_at: datetime
+
+
+class ShareholderProjectOut(BaseModel):
+    workflow_id: uuid.UUID
+    name: str
+    decision_group_id: uuid.UUID
+    decision_leader_name: str
+    total_tasks: int
+    completed_tasks: int
+    blocker_count: int
+
+
+class ShareholderDispatchOut(BaseModel):
+    id: uuid.UUID
+    workflow_id: uuid.UUID
+    project_name: str
+    content: str
+    status: str
+    created_at: datetime
+
+
+class ShareholderBoardOut(BaseModel):
+    group_id: uuid.UUID
+    projects: list[ShareholderProjectOut]
+    dispatches: list[ShareholderDispatchOut]
+
+
+class ShareholderDispatchIn(BaseModel):
+    workflow_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
+    content: str = Field(min_length=1, max_length=12_000)
+
+
 def _tenant_id(user: User) -> uuid.UUID:
     if user.tenant_id is None:
         raise HTTPException(status_code=403, detail="A tenant is required for project workflows")
@@ -162,6 +229,7 @@ async def _project_out(db: AsyncSession, workflow: ProjectWorkflow) -> ProjectOu
         status=workflow.status,
         team_plan=workflow.team_plan,
         group_id=workflow.group_id,
+        decision_group_id=workflow.decision_group_id,
         group_leader_agent_id=workflow.group_leader_agent_id,
         failure_reason=workflow.failure_reason,
         created_at=workflow.created_at,
@@ -275,6 +343,143 @@ async def _ensure_team_directory_contacts(
                     updated_by_user_id=created_by_user_id,
                 )
             )
+    await db.flush()
+
+
+async def _sync_shareholder_group_with_project_leader(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    leader_agent: Agent,
+) -> None:
+    """Add the project leader to the tenant's shareholder group, backfilling the
+    群主 when none has been designated yet.
+
+    The shareholder group is opt-in (it is only created when a human explicitly
+    calls POST /projects/shareholder-group), so this helper is a no-op when the
+    group does not exist. Active project creation is the authoritative source
+    of truth for "who is a project leader"; keeping the membership in sync here
+    means human shareholders always see every project leader and the first
+    active leader gets promoted to 群主, even when the shareholder group was
+    created before any project.
+    """
+    shareholder_group = await db.scalar(
+        select(ShareholderGroup).where(ShareholderGroup.tenant_id == tenant_id)
+    )
+    if shareholder_group is None:
+        return
+    shareholder_group_entity = await db.get(Group, shareholder_group.group_id)
+    if (
+        shareholder_group_entity is None
+        or shareholder_group_entity.deleted_at is not None
+    ):
+        return
+    leader_participant = await db.scalar(
+        select(Participant).where(
+            Participant.type == "agent",
+            Participant.ref_id == leader_agent.id,
+        )
+    )
+    if leader_participant is None:
+        return
+    # Backfill the 群主 when none has been designated yet. This covers the
+    # case where the shareholder group was created before any active project
+    # existed and therefore had no leader to seed.
+    if shareholder_group_entity.owner_agent_id is None:
+        shareholder_group_entity.owner_agent_id = leader_agent.id
+    # Refresh membership. Re-activate a previously removed membership row
+    # when the same leader comes back, and create one when the leader has
+    # never been a member.
+    existing_membership = await db.scalar(
+        select(GroupMember).where(
+            GroupMember.group_id == shareholder_group_entity.id,
+            GroupMember.participant_id == leader_participant.id,
+        )
+    )
+    if existing_membership is not None:
+        if existing_membership.removed_at is not None:
+            existing_membership.removed_at = None
+            existing_membership.joined_at = datetime.now(UTC)
+        return
+    db.add(
+        GroupMember(
+            id=uuid.uuid4(),
+            group_id=shareholder_group_entity.id,
+            participant_id=leader_participant.id,
+            role="member",
+            joined_at=datetime.now(UTC),
+            removed_at=None,
+            session_read_state={},
+        )
+    )
+
+async def _ensure_project_decision_group(
+    db: AsyncSession,
+    *,
+    workflow: ProjectWorkflow,
+    human_participant: Participant,
+    agents: list[tuple[dict, Agent, Participant]],
+) -> None:
+    """Create the project governance group once, without duplicating members.
+
+    The execution group remains where Agents do the work.  The decision group
+    is the single user-facing review surface: all project members can provide
+    evidence there, while the project leader owns confirmed handoffs back to
+    the execution group.
+    """
+    if workflow.decision_group_id is not None:
+        return
+    _, leader_agent, leader_participant = next(
+        item for item in agents if item[0]["is_group_leader"]
+    )
+    try:
+        decision_group = await group_chat_service.create_group(
+            db,
+            tenant_id=workflow.tenant_id,
+            creator_participant_id=human_participant.id,
+            name=f"{workflow.name} · 决策群",
+            description=(
+                "项目治理与方案评审群。项目群在此汇报进展、成效与卡点；"
+                "决策群讨论确认后，由项目负责人下发给项目群执行，并向用户汇报。"
+            ),
+            member_participant_ids=[participant.id for _, _, participant in agents],
+        )
+    except GroupChatServiceError as exc:
+        raise HTTPException(status_code=422, detail=f"决策群创建失败：{exc}") from exc
+    decision_group.owner_agent_id = leader_agent.id
+    owner_membership = await db.scalar(
+        select(GroupMember).where(
+            GroupMember.group_id == decision_group.id,
+            GroupMember.participant_id == leader_participant.id,
+            GroupMember.removed_at.is_(None),
+        )
+    )
+    if owner_membership is None:
+        raise HTTPException(status_code=500, detail="Decision group leader membership was not created")
+    owner_membership.role = "owner"
+    review_session = await group_chat_service.create_group_session(
+        db,
+        tenant_id=workflow.tenant_id,
+        group_id=decision_group.id,
+        actor_participant_id=human_participant.id,
+        title="方案评审",
+    )
+    workflow.decision_group_id = decision_group.id
+    await group_message_service.enqueue_group_message(
+        db,
+        tenant_id=workflow.tenant_id,
+        group_id=decision_group.id,
+        session_id=review_session.id,
+        sender_participant_id=human_participant.id,
+        content=(
+            "【决策群已启动】项目群的阶段进展、交付结果和卡点会汇报到这里。"
+            "请先在本群审议方案与风险；需要我确认时，在评审室汇总待决项。"
+            "确认后由项目总负责人向项目群下发执行指令，并在本群回报结果。"
+        ),
+        mention_participant_ids=[leader_participant.id],
+        message_id=uuid.uuid4(),
+        project_task_dispatch=False,
+    )
     await db.flush()
 
 
@@ -430,6 +635,14 @@ async def create_project(
         actor_participant_id=human_participant.id,
         title="项目协作",
     )
+    workflow.group_id = group.id
+    workflow.group_leader_agent_id = leader_agent.id
+    await _ensure_project_decision_group(
+        db,
+        workflow=workflow,
+        human_participant=human_participant,
+        agents=agents,
+    )
     try:
         await group_message_service.enqueue_group_message(
             db,
@@ -447,17 +660,67 @@ async def create_project(
         )
     except GroupMessageServiceError as exc:
         raise HTTPException(status_code=422, detail=f"Project kickoff could not be created: {exc}") from exc
-    workflow.group_id = group.id
-    workflow.group_leader_agent_id = leader_agent.id
     workflow.status = "active"
     workflow.updated_at = datetime.now(UTC)
     await db.flush()
+    await _sync_shareholder_group_with_project_leader(
+        db,
+        tenant_id=tenant_id,
+        leader_agent=leader_agent,
+    )
 
     result = await _project_out(db, workflow)
     # Make the session visible to consumers in the returned transaction, while
     # retaining a deliberate local binding as a regression guard for creation order.
     assert session.group_id == group.id
     return result
+
+
+@router.post("/{workflow_id}/decision-group", response_model=ProjectOut)
+async def ensure_project_decision_group(
+    workflow_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectOut:
+    """Upgrade an existing project to the decision-group governance flow."""
+    workflow = await db.scalar(
+        select(ProjectWorkflow).where(
+            ProjectWorkflow.id == workflow_id,
+            ProjectWorkflow.tenant_id == _tenant_id(current_user),
+            ProjectWorkflow.creator_id == current_user.id,
+        )
+    )
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Project workflow not found")
+    if workflow.group_id is None:
+        raise HTTPException(status_code=422, detail="项目群尚未创建，无法建立决策群。")
+    human_participant = await get_or_create_user_participant(
+        db,
+        current_user.id,
+        current_user.display_name,
+        current_user.avatar_url,
+    )
+    member_rows = (
+        await db.execute(
+            select(ProjectWorkflowMember, Agent, Participant)
+            .join(Agent, Agent.id == ProjectWorkflowMember.agent_id)
+            .join(Participant, (Participant.type == "agent") & (Participant.ref_id == Agent.id))
+            .where(ProjectWorkflowMember.workflow_id == workflow.id)
+        )
+    ).all()
+    agents = [
+        ({"is_group_leader": member.is_group_leader}, agent, participant)
+        for member, agent, participant in member_rows
+    ]
+    if not agents or not any(role["is_group_leader"] for role, _, _ in agents):
+        raise HTTPException(status_code=422, detail="项目团队缺少可用的项目总负责人。")
+    await _ensure_project_decision_group(
+        db,
+        workflow=workflow,
+        human_participant=human_participant,
+        agents=agents,
+    )
+    return await _project_out(db, workflow)
 
 
 @router.get("", response_model=list[ProjectOut])
@@ -472,6 +735,287 @@ async def list_projects(
         .order_by(ProjectWorkflow.created_at.desc())
     )
     return [await _project_out(db, workflow) for workflow in result.scalars().all()]
+
+
+async def _shareholder_group_for_user(
+    db: AsyncSession,
+    *,
+    current_user: User,
+) -> tuple[ShareholderGroup, Participant]:
+    """Resolve the company governance group only for an active human member."""
+    participant = await get_or_create_user_participant(
+        db,
+        current_user.id,
+        current_user.display_name,
+        current_user.avatar_url,
+    )
+    shareholder_group = await db.scalar(
+        select(ShareholderGroup)
+        .join(GroupMember, GroupMember.group_id == ShareholderGroup.group_id)
+        .where(
+            ShareholderGroup.tenant_id == _tenant_id(current_user),
+            GroupMember.participant_id == participant.id,
+            GroupMember.removed_at.is_(None),
+        )
+    )
+    if shareholder_group is None:
+        raise HTTPException(status_code=404, detail="Shareholder group not found or access denied")
+    return shareholder_group, participant
+
+
+@router.get("/shareholder-group", response_model=ShareholderGroupOut | None)
+async def get_shareholder_group(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShareholderGroupOut | None:
+    """Return the tenant's shareholder group when the user is a member."""
+    try:
+        shareholder_group, _ = await _shareholder_group_for_user(db, current_user=current_user)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return None
+        raise
+    group = await db.get(Group, shareholder_group.group_id)
+    if group is None:
+        return None
+    return ShareholderGroupOut(
+        group_id=group.id,
+        name=group.name,
+        created_at=shareholder_group.created_at,
+    )
+
+
+@router.post("/shareholder-group", response_model=ShareholderGroupOut, status_code=status.HTTP_201_CREATED)
+async def create_shareholder_group(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShareholderGroupOut:
+    """Create one company-level shareholder group for cross-project governance."""
+    tenant_id = _tenant_id(current_user)
+    existing = await db.scalar(select(ShareholderGroup).where(ShareholderGroup.tenant_id == tenant_id))
+    if existing is not None:
+        group = await db.get(Group, existing.group_id)
+        if group is None:
+            raise HTTPException(status_code=409, detail="Shareholder group record is inconsistent")
+        return ShareholderGroupOut(group_id=group.id, name=group.name, created_at=existing.created_at)
+    participant = await get_or_create_user_participant(
+        db,
+        current_user.id,
+        current_user.display_name,
+        current_user.avatar_url,
+    )
+    leader_rows_result = await db.execute(
+        select(Agent)
+        .join(ProjectWorkflow, ProjectWorkflow.group_leader_agent_id == Agent.id)
+        .where(
+            ProjectWorkflow.tenant_id == tenant_id,
+            ProjectWorkflow.status == "active",
+            ProjectWorkflow.group_leader_agent_id.is_not(None),
+            Agent.deleted_at.is_(None),
+        )
+        .order_by(ProjectWorkflow.created_at.asc())
+    )
+    leader_rows = list(leader_rows_result.scalars().all())
+    seen_participant_ids: set[uuid.UUID] = {participant.id}
+    leader_participant_ids: list[uuid.UUID] = []
+    for leader_agent in leader_rows:
+        leader_participant = await db.scalar(
+            select(Participant).where(
+                Participant.type == "agent",
+                Participant.ref_id == leader_agent.id,
+            )
+        )
+        if leader_participant is None or leader_participant.id in seen_participant_ids:
+            continue
+        seen_participant_ids.add(leader_participant.id)
+        leader_participant_ids.append(leader_participant.id)
+    try:
+        group = await group_chat_service.create_group(
+            db,
+            tenant_id=tenant_id,
+            creator_participant_id=participant.id,
+            name="股东群",
+            description=(
+                "公司级项目进展、资源管控与跨项目决策群。自动包含所有项目负责人 Agent，"
+                "负责人在此接收股东决策并回报进展；确认后按项目下发至对应决策群。"
+            ),
+            member_participant_ids=leader_participant_ids,
+        )
+    except GroupChatServiceError as exc:
+        raise HTTPException(status_code=422, detail=f"股东群创建失败：{exc}") from exc
+    if leader_rows:
+        group.owner_agent_id = leader_rows[0].id
+    await group_chat_service.create_group_session(
+        db,
+        tenant_id=tenant_id,
+        group_id=group.id,
+        actor_participant_id=participant.id,
+        title="公司治理",
+    )
+    shareholder_group = ShareholderGroup(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        group_id=group.id,
+        creator_id=current_user.id,
+    )
+    db.add(shareholder_group)
+    await db.flush()
+    return ShareholderGroupOut(
+        group_id=group.id,
+        name=group.name,
+        created_at=shareholder_group.created_at,
+    )
+
+
+@router.get("/groups/{group_id}/shareholder-board", response_model=ShareholderBoardOut)
+async def get_shareholder_board(
+    group_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShareholderBoardOut:
+    """List routable project decision groups and company decision receipts."""
+    shareholder_group, _ = await _shareholder_group_for_user(db, current_user=current_user)
+    if shareholder_group.group_id != group_id:
+        raise HTTPException(status_code=404, detail="Shareholder board not found for this group")
+    workflows = (
+        await db.execute(
+            select(ProjectWorkflow, Agent.name)
+            .outerjoin(Agent, Agent.id == ProjectWorkflow.group_leader_agent_id)
+            .where(
+                ProjectWorkflow.tenant_id == _tenant_id(current_user),
+                ProjectWorkflow.status == "active",
+                ProjectWorkflow.decision_group_id.is_not(None),
+            )
+            .order_by(ProjectWorkflow.created_at.desc())
+        )
+    ).all()
+    dispatch_rows = (
+        await db.execute(
+            select(ShareholderDispatch, ProjectWorkflow.name)
+            .join(ProjectWorkflow, ProjectWorkflow.id == ShareholderDispatch.workflow_id)
+            .where(ShareholderDispatch.shareholder_group_id == shareholder_group.id)
+            .order_by(ShareholderDispatch.created_at.desc())
+            .limit(30)
+        )
+    ).all()
+    workflow_ids = [workflow.id for workflow, _ in workflows]
+    task_rows = (
+        await db.execute(
+            select(Task.project_workflow_id, Task.status).where(Task.project_workflow_id.in_(workflow_ids))
+        )
+    ).all() if workflow_ids else []
+    task_stats: dict[uuid.UUID, dict[str, int]] = {}
+    for workflow_id, task_status in task_rows:
+        if workflow_id is None:
+            continue
+        stats = task_stats.setdefault(workflow_id, {"total": 0, "completed": 0, "blockers": 0})
+        stats["total"] += 1
+        stats["completed"] += int(task_status == "done")
+        stats["blockers"] += int(task_status in {"blocked", "failed"})
+    return ShareholderBoardOut(
+        group_id=group_id,
+        projects=[
+            ShareholderProjectOut(
+                workflow_id=workflow.id,
+                name=workflow.name,
+                decision_group_id=workflow.decision_group_id,
+                decision_leader_name=leader_name or "项目决策群主",
+                total_tasks=task_stats.get(workflow.id, {}).get("total", 0),
+                completed_tasks=task_stats.get(workflow.id, {}).get("completed", 0),
+                blocker_count=task_stats.get(workflow.id, {}).get("blockers", 0),
+            )
+            for workflow, leader_name in workflows
+            if workflow.decision_group_id is not None
+        ],
+        dispatches=[
+            ShareholderDispatchOut(
+                id=dispatch.id,
+                workflow_id=dispatch.workflow_id,
+                project_name=project_name,
+                content=dispatch.content,
+                status=dispatch.status,
+                created_at=dispatch.created_at,
+            )
+            for dispatch, project_name in dispatch_rows
+        ],
+    )
+
+
+@router.post("/groups/{group_id}/shareholder-dispatch")
+async def dispatch_shareholder_decision(
+    group_id: uuid.UUID,
+    body: ShareholderDispatchIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Route one confirmed shareholder decision to selected project decision leaders."""
+    shareholder_group, _ = await _shareholder_group_for_user(db, current_user=current_user)
+    if shareholder_group.group_id != group_id:
+        raise HTTPException(status_code=404, detail="Shareholder board not found for this group")
+    workflow_ids = list(dict.fromkeys(body.workflow_ids))
+    workflows = (
+        await db.execute(
+            select(ProjectWorkflow).where(
+                ProjectWorkflow.id.in_(workflow_ids),
+                ProjectWorkflow.tenant_id == _tenant_id(current_user),
+                ProjectWorkflow.status == "active",
+                ProjectWorkflow.decision_group_id.is_not(None),
+                ProjectWorkflow.group_leader_agent_id.is_not(None),
+            )
+        )
+    ).scalars().all()
+    if len(workflows) != len(workflow_ids):
+        raise HTTPException(status_code=422, detail="所选项目中存在未就绪的决策群，无法下发。")
+    content = body.content.strip()
+    dispatch_ids: list[str] = []
+    for workflow in workflows:
+        assert workflow.decision_group_id is not None
+        assert workflow.group_leader_agent_id is not None
+        review_session = await db.scalar(
+            select(ChatSession).where(
+                ChatSession.tenant_id == workflow.tenant_id,
+                ChatSession.group_id == workflow.decision_group_id,
+                ChatSession.deleted_at.is_(None),
+            ).order_by(ChatSession.created_at.asc())
+        )
+        leader_participant = await db.scalar(
+            select(Participant).where(
+                Participant.type == "agent",
+                Participant.ref_id == workflow.group_leader_agent_id,
+            )
+        )
+        if review_session is None or leader_participant is None:
+            raise HTTPException(status_code=422, detail=f"项目“{workflow.name}”的决策群尚未就绪。")
+        dispatch = ShareholderDispatch(
+            id=uuid.uuid4(),
+            shareholder_group_id=shareholder_group.id,
+            workflow_id=workflow.id,
+            target_decision_group_id=workflow.decision_group_id,
+            content=content,
+            status="dispatched",
+            created_by_user_id=current_user.id,
+        )
+        db.add(dispatch)
+        await group_message_service.enqueue_group_message(
+            db,
+            tenant_id=workflow.tenant_id,
+            group_id=workflow.decision_group_id,
+            session_id=review_session.id,
+            # The project leader is a guaranteed member of its decision group.
+            # The audit receipt keeps the shareholder who confirmed the decision.
+            sender_participant_id=leader_participant.id,
+            content=(
+                f"【股东群确认决策】项目「{workflow.name}」\n{content}\n\n"
+                "请决策群主组织本群确认影响、资源与执行方案；确认后向项目群分发任务，"
+                "并将进展与风险回报至决策群。"
+            ),
+            mention_participant_ids=[leader_participant.id],
+            message_id=uuid.uuid5(dispatch.id, "shareholder-decision-dispatch"),
+            project_task_dispatch=False,
+        )
+        dispatch_ids.append(str(dispatch.id))
+    await db.flush()
+    return {"status": "dispatched", "dispatch_ids": dispatch_ids}
 
 
 @router.post("/{workflow_id}/provision", response_model=ProjectOut)
@@ -564,10 +1108,31 @@ async def provision_project_team(
         agents=agents,
         created_by_user_id=current_user.id,
     )
+    if workflow.group_id is not None:
+        human_participant = await get_or_create_user_participant(
+            db,
+            current_user.id,
+            current_user.display_name,
+            current_user.avatar_url,
+        )
+        await _ensure_project_decision_group(
+            db,
+            workflow=workflow,
+            human_participant=human_participant,
+            agents=agents,
+        )
     workflow.status = "active"
     workflow.failure_reason = None
     workflow.updated_at = datetime.now(UTC)
     await db.flush()
+    if workflow.group_leader_agent_id is not None:
+        leader_agent_for_sync = await db.get(Agent, workflow.group_leader_agent_id)
+        if leader_agent_for_sync is not None:
+            await _sync_shareholder_group_with_project_leader(
+                db,
+                tenant_id=tenant_id,
+                leader_agent=leader_agent_for_sync,
+            )
     return await _project_out(db, workflow)
 
 
@@ -578,16 +1143,7 @@ async def list_project_group_tasks(
     db: AsyncSession = Depends(get_db),
 ) -> list[ProjectTaskOut]:
     """Expose the durable project execution board directly from a project group."""
-    tenant_id = _tenant_id(current_user)
-    workflow = await db.scalar(
-        select(ProjectWorkflow).where(
-            ProjectWorkflow.group_id == group_id,
-            ProjectWorkflow.tenant_id == tenant_id,
-            ProjectWorkflow.creator_id == current_user.id,
-        )
-    )
-    if workflow is None:
-        raise HTTPException(status_code=404, detail="Project workflow not found")
+    workflow = await _project_group_workflow_for_user(db, group_id=group_id, current_user=current_user)
     rows = await db.execute(
         select(Task, Agent.name)
         .join(Agent, Agent.id == Task.agent_id)
@@ -613,6 +1169,77 @@ async def list_project_group_tasks(
     ]
 
 
+@router.get("/groups/{group_id}/overview", response_model=ProjectGroupOverviewOut)
+async def get_project_group_overview(
+    group_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectGroupOverviewOut:
+    """Return the project board, visible outcomes, progress, and active blockers."""
+    workflow = await _project_group_workflow_for_user(db, group_id=group_id, current_user=current_user)
+    rows = (
+        await db.execute(
+            select(Task, Agent.name)
+            .join(Agent, Agent.id == Task.agent_id)
+            .where(Task.project_workflow_id == workflow.id)
+            .order_by(Task.created_at.asc())
+        )
+    ).all()
+    board_tasks: list[ProjectBoardTaskOut] = []
+    blockers: list[ProjectBlockerOut] = []
+    for task, agent_name in rows:
+        latest_log = await db.scalar(
+            select(TaskLog.content)
+            .where(TaskLog.task_id == task.id)
+            .order_by(TaskLog.created_at.desc())
+            .limit(1)
+        )
+        outcome = latest_log.strip() if isinstance(latest_log, str) and latest_log.strip() else None
+        board_tasks.append(
+            ProjectBoardTaskOut(
+                id=task.id,
+                agent_id=task.agent_id,
+                agent_name=agent_name,
+                title=task.title,
+                description=task.description,
+                status=task.status,
+                priority=task.priority,
+                dependency_task_ids=task.dependency_task_ids or [],
+                report_to_agent_id=task.report_to_agent_id,
+                is_project_closure=task.is_project_closure,
+                completed_at=task.completed_at,
+                updated_at=task.updated_at,
+                latest_outcome=outcome,
+            )
+        )
+        if task.status in {"blocked", "failed"}:
+            blockers.append(
+                ProjectBlockerOut(
+                    task_id=task.id,
+                    title=task.title,
+                    agent_name=agent_name,
+                    status=task.status,
+                    reason=outcome or task.description,
+                )
+            )
+    total_tasks = len(board_tasks)
+    completed_tasks = sum(task.status == "done" for task in board_tasks)
+    active_tasks = sum(task.status in {"pending", "doing"} for task in board_tasks)
+    blocked_tasks = sum(task.status == "blocked" for task in board_tasks)
+    failed_tasks = sum(task.status == "failed" for task in board_tasks)
+    return ProjectGroupOverviewOut(
+        project_name=workflow.name,
+        total_tasks=total_tasks,
+        completed_tasks=completed_tasks,
+        active_tasks=active_tasks,
+        blocked_tasks=blocked_tasks,
+        failed_tasks=failed_tasks,
+        progress_percent=round((completed_tasks / total_tasks) * 100) if total_tasks else 0,
+        tasks=board_tasks,
+        blockers=blockers,
+    )
+
+
 async def _project_group_workflow_for_user(
     db: AsyncSession,
     *,
@@ -621,7 +1248,7 @@ async def _project_group_workflow_for_user(
 ) -> ProjectWorkflow:
     workflow = await db.scalar(
         select(ProjectWorkflow).where(
-            ProjectWorkflow.group_id == group_id,
+            or_(ProjectWorkflow.group_id == group_id, ProjectWorkflow.decision_group_id == group_id),
             ProjectWorkflow.tenant_id == _tenant_id(current_user),
             ProjectWorkflow.creator_id == current_user.id,
         )
@@ -629,6 +1256,14 @@ async def _project_group_workflow_for_user(
     if workflow is None:
         raise HTTPException(status_code=404, detail="Project workflow not found")
     return workflow
+
+
+def _decision_review_group_filter(group_id: uuid.UUID):
+    """Keep legacy decisions in their project group and new ones in review."""
+    return or_(
+        ProjectDecision.review_group_id == group_id,
+        and_(ProjectDecision.review_group_id.is_(None), ProjectDecision.group_id == group_id),
+    )
 
 
 @router.get("/groups/{group_id}/decisions", response_model=list[ProjectDecisionOut])
@@ -647,6 +1282,7 @@ async def list_project_group_decisions(
         .where(
             ProjectDecision.workflow_id == workflow.id,
             ProjectDecision.status == "pending",
+            _decision_review_group_filter(group_id),
         )
         .order_by(ProjectDecision.created_at.asc())
     )
@@ -686,7 +1322,7 @@ async def generate_project_decision_draft(
         select(ProjectDecision).where(
             ProjectDecision.id == decision_id,
             ProjectDecision.workflow_id == workflow.id,
-            ProjectDecision.group_id == group_id,
+            _decision_review_group_filter(group_id),
             ProjectDecision.status == "pending",
         )
     )
@@ -787,7 +1423,7 @@ async def reply_to_project_group_decision(
         select(ProjectDecision).where(
             ProjectDecision.id == decision_id,
             ProjectDecision.workflow_id == workflow.id,
-            ProjectDecision.group_id == group_id,
+            _decision_review_group_filter(group_id),
         ).with_for_update()
     )
     if decision is None:
@@ -816,7 +1452,7 @@ async def reply_to_project_group_decision(
         await group_message_service.enqueue_group_message(
             db,
             tenant_id=workflow.tenant_id,
-            group_id=group_id,
+            group_id=decision.group_id,
             session_id=decision.session_id,
             sender_participant_id=participant.id,
             content=leader_instruction,

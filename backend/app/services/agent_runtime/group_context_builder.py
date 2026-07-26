@@ -344,6 +344,9 @@ class GroupContextBuilder:
                 "group_id": str(group.id),
                 "name": group.name,
                 "description": group.description or "",
+                "owner_agent_id": (
+                    str(group.owner_agent_id) if group.owner_agent_id is not None else None
+                ),
             },
             "session": {
                 "session_id": str(session.id),

@@ -143,6 +143,49 @@ export interface ProjectGroupTask {
     updated_at: string | null;
 }
 
+export interface ProjectGroupBoardTask extends ProjectGroupTask {
+    latest_outcome: string | null;
+}
+
+export interface ProjectGroupOverview {
+    project_name: string;
+    total_tasks: number;
+    completed_tasks: number;
+    active_tasks: number;
+    blocked_tasks: number;
+    failed_tasks: number;
+    progress_percent: number;
+    tasks: ProjectGroupBoardTask[];
+    blockers: Array<{
+        task_id: string;
+        title: string;
+        agent_name: string;
+        status: 'blocked' | 'failed' | string;
+        reason: string | null;
+    }>;
+}
+
+export interface ShareholderBoard {
+    group_id: string;
+    projects: Array<{
+        workflow_id: string;
+        name: string;
+        decision_group_id: string;
+        decision_leader_name: string;
+        total_tasks: number;
+        completed_tasks: number;
+        blocker_count: number;
+    }>;
+    dispatches: Array<{
+        id: string;
+        workflow_id: string;
+        project_name: string;
+        content: string;
+        status: string;
+        created_at: string;
+    }>;
+}
+
 export interface ProjectGroupDecision {
     id: string;
     task_id: string | null;

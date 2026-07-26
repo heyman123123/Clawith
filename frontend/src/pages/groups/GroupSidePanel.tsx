@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { IconCheck, IconCircleDot, IconPlus, IconRobot, IconSettings, IconSparkles, IconUser, IconX } from '@tabler/icons-react';
+import { IconAlertTriangle, IconBuildingBank, IconChartBar, IconCheck, IconCircleDot, IconPlus, IconRobot, IconSend, IconSettings, IconSparkles, IconUser, IconX } from '@tabler/icons-react';
 import { groupApi } from '../../services/groupApi';
 import GroupTextFileEditor from './GroupTextFileEditor';
 import GroupWorkspaceTab from './GroupWorkspaceTab';
 import GroupMemoryTab from './GroupMemoryTab';
-import type { GroupMember, ProjectGroupDecision, ProjectGroupTask } from '../../types/group';
+import type { GroupMember, ProjectGroupDecision, ProjectGroupOverview, ProjectGroupTask, ShareholderBoard } from '../../types/group';
 
-type PanelTab = 'members' | 'tasks' | 'decisions' | 'announcement' | 'workspace' | 'memory';
+type PanelTab = 'members' | 'dashboard' | 'tasks' | 'decisions' | 'shareholder' | 'announcement' | 'workspace' | 'memory';
 
 const PANEL_WIDTH_KEY = 'groups.panelWidth';
 // Default sized by measurement, not taste: a long realistic member name — 12 CJK chars plus the
@@ -48,6 +48,14 @@ export default function GroupSidePanel({
     const [tasks, setTasks] = useState<ProjectGroupTask[] | null>(null);
     const [tasksError, setTasksError] = useState(false);
     const [startingTasks, setStartingTasks] = useState(false);
+    const [overview, setOverview] = useState<ProjectGroupOverview | null>(null);
+    const [overviewError, setOverviewError] = useState(false);
+    const [shareholderBoard, setShareholderBoard] = useState<ShareholderBoard | null>(null);
+    const [shareholderBoardError, setShareholderBoardError] = useState(false);
+    const [shareholderProjectIds, setShareholderProjectIds] = useState<string[]>([]);
+    const [shareholderDecision, setShareholderDecision] = useState('');
+    const [dispatchingShareholderDecision, setDispatchingShareholderDecision] = useState(false);
+    const [shareholderDispatchError, setShareholderDispatchError] = useState('');
     const [decisions, setDecisions] = useState<ProjectGroupDecision[] | null>(null);
     const [decisionsError, setDecisionsError] = useState(false);
     const [decisionDrafts, setDecisionDrafts] = useState<Record<string, string>>({});
@@ -65,6 +73,29 @@ export default function GroupSidePanel({
             });
     };
 
+    const reloadProjectOverview = () => {
+        setOverviewError(false);
+        return groupApi.projectOverview(groupId)
+            .then(setOverview)
+            .catch(() => {
+                setOverview(null);
+                setOverviewError(true);
+            });
+    };
+
+    const reloadShareholderBoard = () => {
+        setShareholderBoardError(false);
+        return groupApi.shareholderBoard(groupId)
+            .then((board) => {
+                setShareholderBoard(board);
+                setShareholderProjectIds((current) => current.filter((id) => board.projects.some((project) => project.workflow_id === id)));
+            })
+            .catch(() => {
+                setShareholderBoard(null);
+                setShareholderBoardError(true);
+            });
+    };
+
     const reloadProjectDecisions = () => {
         setDecisionsError(false);
         return groupApi.projectDecisions(groupId)
@@ -78,6 +109,16 @@ export default function GroupSidePanel({
     useEffect(() => {
         if (tab !== 'tasks') return;
         void reloadProjectTasks();
+    }, [groupId, tab]);
+
+    useEffect(() => {
+        if (tab !== 'dashboard') return;
+        void reloadProjectOverview();
+    }, [groupId, tab]);
+
+    useEffect(() => {
+        if (tab !== 'shareholder') return;
+        void reloadShareholderBoard();
     }, [groupId, tab]);
 
     useEffect(() => {
@@ -172,6 +213,30 @@ export default function GroupSidePanel({
             .finally(() => setReplyingDecisionId(null));
     };
 
+    const toggleShareholderProject = (workflowId: string) => {
+        setShareholderDispatchError('');
+        setShareholderProjectIds((current) => current.includes(workflowId)
+            ? current.filter((id) => id !== workflowId)
+            : [...current, workflowId]);
+    };
+
+    const dispatchShareholderDecision = () => {
+        const content = shareholderDecision.trim();
+        if (!content || shareholderProjectIds.length === 0 || dispatchingShareholderDecision) return;
+        setDispatchingShareholderDecision(true);
+        setShareholderDispatchError('');
+        void groupApi.dispatchShareholderDecision(groupId, shareholderProjectIds, content)
+            .then(() => {
+                setShareholderDecision('');
+                setShareholderProjectIds([]);
+                return reloadShareholderBoard();
+            })
+            .catch((error: unknown) => {
+                setShareholderDispatchError(error instanceof Error ? error.message : t('groups.shareholderDispatchFailed', '股东决策下发失败，请重试。'));
+            })
+            .finally(() => setDispatchingShareholderDecision(false));
+    };
+
     const renderMember = (member: GroupMember) => (
         <div key={member.id} className="group-member-row">
             <span className={`group-avatar sm ${member.participant_type === 'agent' ? 'agent' : ''}`}>
@@ -201,8 +266,10 @@ export default function GroupSidePanel({
 
     const TABS: { key: PanelTab; label: string }[] = [
         { key: 'members', label: `${t('groups.members', '成员')} · ${members.length}` },
+        { key: 'dashboard', label: t('groups.projectDashboard', '看板') },
         { key: 'tasks', label: t('groups.tasks', '任务') },
-        { key: 'decisions', label: t('groups.decisions', '待决') },
+        { key: 'decisions', label: t('groups.reviewRoom', '评审室') },
+        { key: 'shareholder', label: t('groups.shareholderBoard', '股东决策') },
         { key: 'announcement', label: t('groups.announcement', '群公告') },
         { key: 'workspace', label: t('groups.workspace', '文件') },
         { key: 'memory', label: t('groups.memory', '记忆') },
@@ -276,6 +343,73 @@ export default function GroupSidePanel({
                     </>
                 )}
 
+                {tab === 'dashboard' && (
+                    <div className="project-dashboard">
+                        {overview === null && !overviewError && <div className="group-member-hint">{t('common.loading', '加载中...')}</div>}
+                        {overviewError && <div className="project-dashboard-empty"><IconChartBar size={18} /><span>{t('groups.noProjectDashboard', '当前群尚未关联项目看板。')}</span></div>}
+                        {overview && <>
+                            <section className="project-dashboard-hero">
+                                <div><span>{t('groups.projectPulse', '项目脉冲')}</span><strong>{overview.project_name}</strong><p>{t('groups.projectDashboardHint', '执行进展、负责人、交付成效与风险在此同步。')}</p></div>
+                                <div className="project-progress-orb"><b>{overview.progress_percent}%</b><small>{t('groups.projectProgress', '已完成')}</small></div>
+                            </section>
+                            <div className="project-dashboard-metrics">
+                                <div><span>{t('groups.completedTasks', '已完成')}</span><strong>{overview.completed_tasks}<small>/{overview.total_tasks}</small></strong></div>
+                                <div><span>{t('groups.activeTasks', '进行中')}</span><strong>{overview.active_tasks}</strong></div>
+                                <div className={overview.blocked_tasks + overview.failed_tasks > 0 ? 'risk' : ''}><span>{t('groups.projectBlockers', '卡点')}</span><strong>{overview.blocked_tasks + overview.failed_tasks}</strong></div>
+                            </div>
+                            <section className="project-dashboard-section">
+                                <div className="project-dashboard-section-title"><span>{t('groups.responsibilityBoard', '责任看板')}</span><small>{t('groups.responsibilityBoardHint', '谁负责什么，以及最近成效')}</small></div>
+                                <div className="project-task-board">{overview.tasks.map((task) => <article key={task.id} className={`project-board-task ${task.status}`}>
+                                    <div><span className={`project-task-status ${task.status}`}>{task.status === 'done' ? t('groups.taskDone', '已完成') : task.status === 'failed' ? t('groups.taskFailed', '失败') : task.status === 'blocked' ? t('groups.taskBlocked', '阻塞') : task.status === 'doing' ? t('groups.taskDoing', '执行中') : t('groups.taskPending', '待开始')}</span><strong>{task.title}</strong></div>
+                                    <p>{task.agent_name} · {task.priority}</p>
+                                    <small>{task.latest_outcome || task.description || t('groups.noTaskOutcome', '尚无可展示的交付结果。')}</small>
+                                </article>)}</div>
+                            </section>
+                            <section className="project-dashboard-section">
+                                <div className="project-dashboard-section-title"><span><IconAlertTriangle size={14} /> {t('groups.projectBlockers', '卡点面板')}</span><small>{t('groups.projectBlockersHint', '失败或依赖阻塞会在这里集中显示。')}</small></div>
+                                {overview.blockers.length ? <div className="project-blocker-list">{overview.blockers.map((blocker) => <article key={blocker.task_id}><div><strong>{blocker.title}</strong><span>{blocker.agent_name} · {blocker.status === 'failed' ? t('groups.taskFailed', '失败') : t('groups.taskBlocked', '阻塞')}</span></div><p>{blocker.reason || t('groups.noBlockerReason', '暂无具体原因，请查看任务日志。')}</p></article>)}</div> : <div className="project-dashboard-clear"><IconCheck size={15} /> {t('groups.noProjectBlockers', '当前没有卡点，项目可以继续流转。')}</div>}
+                            </section>
+                        </>}
+                    </div>
+                )}
+
+                {tab === 'shareholder' && (
+                    <div className="shareholder-board">
+                        {shareholderBoard === null && !shareholderBoardError && <div className="group-member-hint">{t('common.loading', '加载中...')}</div>}
+                        {shareholderBoardError && <div className="project-dashboard-empty"><IconBuildingBank size={18} /><span>{t('groups.notShareholderGroup', '当前群不是股东群。可在项目流程中创建股东群。')}</span></div>}
+                        {shareholderBoard && <>
+                            <section className="shareholder-board-hero">
+                                <IconBuildingBank size={20} />
+                                <div><strong>{t('groups.shareholderBoardTitle', '公司治理决策台')}</strong><p>{t('groups.shareholderBoardHint', '先在群内讨论确认，再选择项目下发至对应决策群主。')}</p></div>
+                            </section>
+                            <section className="shareholder-dispatch-form">
+                                <div className="project-dashboard-section-title"><span>{t('groups.selectProjectsToDispatch', '选择下发项目')}</span><small>{shareholderProjectIds.length} {t('groups.projectsSelected', '个已选择')}</small></div>
+                                <div className="shareholder-project-list">{shareholderBoard.projects.map((project) => <label key={project.workflow_id} className={`shareholder-project-option ${shareholderProjectIds.includes(project.workflow_id) ? 'selected' : ''}`}>
+                                    <input type="checkbox" checked={shareholderProjectIds.includes(project.workflow_id)} onChange={() => toggleShareholderProject(project.workflow_id)} />
+                                    <span><strong>{project.name}</strong><small>{project.completed_tasks}/{project.total_tasks} {t('groups.tasks', '任务')} · {project.blocker_count} {t('groups.projectBlockers', '卡点')} · {project.decision_leader_name}</small></span>
+                                </label>)}</div>
+                                {shareholderBoard.projects.length === 0 && <div className="project-dashboard-empty">{t('groups.noRoutableProjects', '暂无已就绪的项目决策群。')}</div>}
+                                <textarea
+                                    className="project-decision-input shareholder-decision-input"
+                                    value={shareholderDecision}
+                                    disabled={dispatchingShareholderDecision}
+                                    placeholder={t('groups.shareholderDecisionPlaceholder', '填写已在股东群确认的项目进展、资源管控或跨项目决策…')}
+                                    onChange={(event) => { setShareholderDecision(event.target.value); setShareholderDispatchError(''); }}
+                                />
+                                {shareholderDispatchError && <div className="project-decision-error">{shareholderDispatchError}</div>}
+                                <button type="button" className="shareholder-dispatch-button" disabled={!shareholderDecision.trim() || shareholderProjectIds.length === 0 || dispatchingShareholderDecision} onClick={dispatchShareholderDecision}>
+                                    <IconSend size={14} />
+                                    {dispatchingShareholderDecision ? t('groups.dispatchingShareholderDecision', '正在下发…') : t('groups.confirmShareholderDispatch', '确认并下发至项目决策群')}
+                                </button>
+                            </section>
+                            <section className="project-dashboard-section">
+                                <div className="project-dashboard-section-title"><span>{t('groups.shareholderDispatchHistory', '最近下发')}</span><small>{t('groups.dispatchReceiptHint', '每项记录均可追溯到目标项目。')}</small></div>
+                                {shareholderBoard.dispatches.length ? <div className="shareholder-dispatch-list">{shareholderBoard.dispatches.map((dispatch) => <article key={dispatch.id}><div><strong>{dispatch.project_name}</strong><span>{dispatch.status === 'dispatched' ? t('groups.dispatched', '已下发') : dispatch.status}</span></div><p>{dispatch.content}</p></article>)}</div> : <div className="project-dashboard-empty">{t('groups.noShareholderDispatches', '暂未下发公司级决策。')}</div>}
+                            </section>
+                        </>}
+                    </div>
+                )}
+
                 {tab === 'tasks' && (
                     <div className="project-panel-list">
                         {tasks === null && <div className="group-member-hint">{t('common.loading', '加载中...')}</div>}
@@ -333,7 +467,7 @@ export default function GroupSidePanel({
                                     <p>{decision.context}</p>
                                     <div className="project-decision-ai-hint">
                                         <IconSparkles size={13} stroke={1.8} />
-                                        {t('groups.decisionAiHint', 'AI 会生成建议内容；审阅后发送给群主执行。')}
+                                        {t('groups.decisionAiHint', 'AI 会生成建议内容；在决策群审阅确认后，再下发项目群执行。')}
                                     </div>
                                     <div className="project-decision-input-wrap">
                                         <textarea
@@ -376,7 +510,7 @@ export default function GroupSidePanel({
                                         onClick={() => submitDecisionModification(decision)}
                                     >
                                         <IconCheck size={14} stroke={1.8} />
-                                        {t('groups.sendToProjectLeader', '发送给群主')}
+                                        {t('groups.sendToProjectLeader', '确认后下发项目群')}
                                     </button>
                                     {isGenerating && <div className="project-decision-sending"><IconSparkles size={13} /> {t('groups.generatingDecisionDraft', '正在生成建议…')}</div>}
                                     {isReplying && <div className="project-decision-sending"><IconCheck size={13} /> {t('groups.sendingDecision', '正在提交…')}</div>}

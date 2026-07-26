@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
+from app.models.chat_session import ChatSession
 from app.models.participant import Participant
 from app.models.project import ProjectDecision, ProjectWorkflow, ProjectWorkflowMember
 from app.models.task import Task
@@ -283,6 +284,68 @@ async def advance_project_task(
         mention_participant_ids=mention_ids,
         message_id=uuid.uuid5(task.id, f"project-task-report:{'done' if succeeded else 'failed'}"),
     )
+    await _report_project_outcome_to_decision_group(
+        db,
+        task=task,
+        tenant_id=tenant_id,
+        sender_participant_id=sender.id,
+        content=content,
+    )
+
+
+async def _report_project_outcome_to_decision_group(
+    db: AsyncSession,
+    *,
+    task: Task,
+    tenant_id: uuid.UUID,
+    sender_participant_id: uuid.UUID,
+    content: str,
+) -> None:
+    """Mirror a project outcome into its governance group for review."""
+    if task.project_workflow_id is None:
+        return
+    workflow = await db.get(ProjectWorkflow, task.project_workflow_id)
+    if workflow is None or workflow.decision_group_id is None:
+        return
+    review_session = await db.scalar(
+        select(ChatSession).where(
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.group_id == workflow.decision_group_id,
+            ChatSession.deleted_at.is_(None),
+        ).order_by(ChatSession.created_at.asc())
+    )
+    if review_session is None:
+        return
+    leader_participant_id = None
+    if workflow.group_leader_agent_id is not None:
+        leader_participant_id = await db.scalar(
+            select(Participant.id).where(
+                Participant.type == "agent",
+                Participant.ref_id == workflow.group_leader_agent_id,
+            )
+        )
+    mentions = (
+        [leader_participant_id]
+        if leader_participant_id is not None and leader_participant_id != sender_participant_id
+        else []
+    )
+    from app.services.group_message_service import enqueue_group_message
+
+    await enqueue_group_message(
+        db,
+        tenant_id=tenant_id,
+        group_id=workflow.decision_group_id,
+        session_id=review_session.id,
+        sender_participant_id=sender_participant_id,
+        content=(
+            "【项目群汇报 → 决策群】\n"
+            f"{content}\n\n"
+            "请结合项目看板审阅该结果、风险与后续方案；需要确认时，在评审室形成结论后下发。"
+        ),
+        mention_participant_ids=mentions,
+        message_id=uuid.uuid5(task.id, f"project-decision-report:{'done' if task.status == 'done' else 'failed'}"),
+        project_task_dispatch=False,
+    )
 
 
 async def capture_project_decisions(
@@ -310,10 +373,12 @@ async def capture_project_decisions(
     )
     if existing is not None:
         return []
+    workflow = await db.get(ProjectWorkflow, task.project_workflow_id)
     decision = ProjectDecision(
         id=uuid.uuid4(),
         workflow_id=task.project_workflow_id,
         group_id=task.group_id,
+        review_group_id=workflow.decision_group_id if workflow is not None else None,
         session_id=task.session_id,
         task_id=task.id,
         requesting_agent_id=task.agent_id,

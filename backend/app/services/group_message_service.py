@@ -650,6 +650,25 @@ async def enqueue_group_message(
         owner_participant_id = owner_result.scalar_one_or_none()
         if owner_participant_id is not None:
             mention_ids = (owner_participant_id,)
+    elif scope.role == "assistant" and scope.group.owner_agent_id is not None:
+        # Leader-led project groups must surface every Agent completion /
+        # status report back to the 群主 so the leader can confirm the
+        # result and drive the next action. Existing mentions are kept;
+        # the owner is appended on top of whatever the Agent already
+        # mentioned, unless the sender is the owner itself (no self-loop).
+        owner_result = await db.execute(
+            select(Participant.id).where(
+                Participant.type == "agent",
+                Participant.ref_id == scope.group.owner_agent_id,
+            )
+        )
+        owner_participant_id = owner_result.scalar_one_or_none()
+        if (
+            owner_participant_id is not None
+            and owner_participant_id != scope.participant.id
+            and owner_participant_id not in mention_ids
+        ):
+            mention_ids = mention_ids + (owner_participant_id,)
     mentions = await _resolve_mentions(
         db,
         tenant_id=tenant_id,

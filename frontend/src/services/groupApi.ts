@@ -14,6 +14,8 @@ import type {
     GroupWorkspaceEntry,
     ProjectGroupTask,
     ProjectGroupDecision,
+    ProjectGroupOverview,
+    ShareholderBoard,
     ParticipantType,
 } from '../types/group';
 
@@ -44,6 +46,18 @@ export const groupApi = {
 
     projectTasks: (groupId: string) =>
         fetchJson<ProjectGroupTask[]>(`/projects/groups/${groupId}/tasks`),
+
+    projectOverview: (groupId: string) =>
+        fetchJson<ProjectGroupOverview>(`/projects/groups/${groupId}/overview`),
+
+    shareholderBoard: (groupId: string) =>
+        fetchJson<ShareholderBoard>(`/projects/groups/${groupId}/shareholder-board`),
+
+    dispatchShareholderDecision: (groupId: string, workflowIds: string[], content: string) =>
+        fetchJson<{ status: string; dispatch_ids: string[] }>(
+            `/projects/groups/${groupId}/shareholder-dispatch`,
+            { method: 'POST', body: JSON.stringify({ workflow_ids: workflowIds, content }) },
+        ),
 
     startProjectTasks: (groupId: string) =>
         fetchJson<{ message_id: string; run_ids: string[]; status: string }>(

@@ -14,6 +14,7 @@ export default function Projects() {
     const [error, setError] = useState('');
     const [copied, setCopied] = useState(false);
     const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: projectApi.list });
+    const { data: shareholderGroup } = useQuery({ queryKey: ['shareholder-group'], queryFn: projectApi.shareholderGroup });
     const planMutation = useMutation({
         mutationFn: projectApi.buildTeamPlan,
         onSuccess: (nextPlan) => { setPlan(nextPlan); setError(''); setCopied(false); },
@@ -24,7 +25,9 @@ export default function Projects() {
         onSuccess: (project) => {
             queryClient.invalidateQueries({ queryKey: ['projects'] });
             queryClient.invalidateQueries({ queryKey: ['groups'] });
-            if (project.group_id) navigate(`/groups/${project.group_id}`);
+            if (project.decision_group_id || project.group_id) {
+                navigate(`/groups/${project.decision_group_id || project.group_id}`);
+            }
         },
         onError: (reason) => setError(reason instanceof Error ? reason.message : '项目群创建失败，未完成创建。请稍后重试。'),
     });
@@ -34,9 +37,30 @@ export default function Projects() {
             queryClient.invalidateQueries({ queryKey: ['projects'] });
             queryClient.invalidateQueries({ queryKey: ['groups'] });
             setError('');
-            if (project.group_id) navigate(`/groups/${project.group_id}`);
+            if (project.decision_group_id || project.group_id) {
+                navigate(`/groups/${project.decision_group_id || project.group_id}`);
+            }
         },
         onError: (reason) => setError(reason instanceof Error ? reason.message : '团队就绪修复失败，请稍后重试。'),
+    });
+    const decisionGroupMutation = useMutation({
+        mutationFn: projectApi.ensureDecisionGroup,
+        onSuccess: (project) => {
+            queryClient.invalidateQueries({ queryKey: ['projects'] });
+            queryClient.invalidateQueries({ queryKey: ['groups'] });
+            setError('');
+            if (project.decision_group_id) navigate(`/groups/${project.decision_group_id}`);
+        },
+        onError: (reason) => setError(reason instanceof Error ? reason.message : '决策群创建失败，请稍后重试。'),
+    });
+    const shareholderGroupMutation = useMutation({
+        mutationFn: projectApi.createShareholderGroup,
+        onSuccess: (group) => {
+            queryClient.invalidateQueries({ queryKey: ['shareholder-group'] });
+            queryClient.invalidateQueries({ queryKey: ['groups'] });
+            navigate(`/groups/${group.group_id}`);
+        },
+        onError: (reason) => setError(reason instanceof Error ? reason.message : '股东群创建失败，请稍后重试。'),
     });
     const buildPlan = () => {
         if (!name.trim() || !requirements.trim()) {
@@ -61,6 +85,15 @@ export default function Projects() {
             </div>
             <h1 style={{ margin: '10px 0 8px', fontSize: 28 }}>先组建团队，再创建项目群</h1>
             <p style={{ margin: 0, color: 'var(--text-secondary, #6b7280)' }}>HR 招聘 Agent 会根据你的实际需求招聘团队，并挑选最适合的项目群主；确认后按自定义成员流程创建全部智能体。</p>
+            <button
+                type="button"
+                onClick={() => shareholderGroup ? navigate(`/groups/${shareholderGroup.group_id}`) : shareholderGroupMutation.mutate()}
+                disabled={shareholderGroupMutation.isPending}
+                style={{ ...secondaryStyle, marginTop: 14 }}
+            >
+                <IconUsersGroup size={15} />
+                {shareholderGroup ? '进入股东群' : shareholderGroupMutation.isPending ? '正在创建股东群…' : '创建股东群'}
+            </button>
         </div>
         <section style={cardStyle}>
             <h2 style={headingStyle}>1. 描述项目</h2>
@@ -70,7 +103,7 @@ export default function Projects() {
             <button onClick={buildPlan} disabled={planMutation.isPending} style={primaryStyle}>{planMutation.isPending ? 'HR 招聘 Agent 正在组建团队…' : '由 HR 招聘 Agent 组建团队'} <IconArrowRight size={16} /></button>
         </section>
         {plan && <section style={{ ...cardStyle, marginTop: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center' }}><div><h2 style={headingStyle}>2. 预览并确认团队</h2><p style={{ color: 'var(--text-secondary, #6b7280)', margin: 0 }}>团队已由 {plan.planner_name} 生成。群主由项目需要决定，负责分派任务并向你汇报。</p></div><span style={tagStyle}>{plan.roles.length} 位成员</span></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center' }}><div><h2 style={headingStyle}>2. 预览并确认团队</h2><p style={{ color: 'var(--text-secondary, #6b7280)', margin: 0 }}>团队已由 {plan.planner_name} 生成。创建后会同时建立项目群与决策群：项目群执行，决策群评审并向你汇报。</p></div><span style={tagStyle}>{plan.roles.length} 位成员</span></div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginTop: 20 }}>
                 {plan.roles.map((role) => <div key={role.key} style={{ border: '1px solid var(--border, #e5e7eb)', borderRadius: 10, padding: 14 }}><div style={{ display: 'flex', gap: 7, alignItems: 'center', fontWeight: 650 }}>{role.is_group_leader && <IconCheck size={16} color="#16a34a" />}{role.name}{role.is_group_leader && <span style={tagStyle}>项目群主</span>}</div><p style={{ color: 'var(--text-secondary, #6b7280)', fontSize: 13, marginBottom: 0 }}>{role.role_description}</p></div>)}
             </div>
@@ -78,9 +111,9 @@ export default function Projects() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><strong>唤醒团队文案</strong><button type="button" onClick={() => void copyWakeUpMessage()} style={secondaryStyle}><IconCopy size={14} /> {copied ? '已复制' : '复制文案'}</button></div>
                 <pre style={{ margin: '12px 0 0', whiteSpace: 'pre-wrap', font: 'inherit', lineHeight: 1.6, color: 'var(--text-secondary, #475569)' }}>{plan.wake_up_message}</pre>
             </div>
-            <button onClick={createProject} disabled={createMutation.isPending} style={{ ...primaryStyle, marginTop: 20 }}>{createMutation.isPending ? '正在创建智能体和项目群…' : '确认并创建项目群'} <IconUsersGroup size={16} /></button>
+            <button onClick={createProject} disabled={createMutation.isPending} style={{ ...primaryStyle, marginTop: 20 }}>{createMutation.isPending ? '正在创建智能体、项目群和决策群…' : '确认并创建项目与决策群'} <IconUsersGroup size={16} /></button>
         </section>}
-        {projects.length > 0 && <section style={{ ...cardStyle, marginTop: 20 }}><h2 style={headingStyle}>我的项目</h2>{projects.map((project) => <div key={project.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, borderTop: '1px solid var(--border, #e5e7eb)', padding: '13px 0' }}><div><strong>{project.name}</strong><div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: 13, marginTop: 4 }}>{project.members.length} 位成员 · {project.status === 'active' ? '群主已就绪' : project.status}{project.failure_reason ? ` · ${project.failure_reason}` : ''}</div></div><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{project.group_id && <button onClick={() => navigate(`/groups/${project.group_id}`)} style={secondaryStyle}>进入项目群</button>}<button onClick={() => repairMutation.mutate(project.id)} disabled={repairMutation.isPending} style={secondaryStyle}>{repairMutation.isPending ? '正在检查团队…' : '检查并修复团队就绪'}</button></div></div>)}</section>}
+        {projects.length > 0 && <section style={{ ...cardStyle, marginTop: 20 }}><h2 style={headingStyle}>我的项目</h2>{projects.map((project) => <div key={project.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, borderTop: '1px solid var(--border, #e5e7eb)', padding: '13px 0' }}><div><strong>{project.name}</strong><div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: 13, marginTop: 4 }}>{project.members.length} 位成员 · {project.status === 'active' ? '治理与团队已就绪' : project.status}{project.failure_reason ? ` · ${project.failure_reason}` : ''}</div></div><div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'end', gap: 8 }}>{project.decision_group_id ? <button onClick={() => navigate(`/groups/${project.decision_group_id}`)} style={primaryStyle}>进入决策群</button> : <button onClick={() => decisionGroupMutation.mutate(project.id)} disabled={decisionGroupMutation.isPending} style={primaryStyle}>{decisionGroupMutation.isPending ? '正在补建…' : '补建决策群'}</button>}{project.group_id && <button onClick={() => navigate(`/groups/${project.group_id}`)} style={secondaryStyle}>查看项目群</button>}<button onClick={() => repairMutation.mutate(project.id)} disabled={repairMutation.isPending} style={secondaryStyle}>{repairMutation.isPending ? '正在检查团队…' : '检查并修复团队就绪'}</button></div></div>)}</section>}
     </div>;
 }
 

@@ -37,6 +37,14 @@ class ProjectWorkflow(Base):
     group_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("groups.id", name="fk_project_workflows_group_id_groups"), nullable=True
     )
+    # The governance surface is intentionally separate from the execution
+    # group. Project members report here, deliberate with the user, then the
+    # confirmed instruction is routed back to the project group leader.
+    decision_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("groups.id", name="fk_project_workflows_decision_group_id_groups"),
+        nullable=True,
+    )
     group_leader_agent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id", name="fk_project_workflows_group_leader_agent_id_agents"), nullable=True
     )
@@ -87,6 +95,9 @@ class ProjectDecision(Base):
     group_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False
     )
+    review_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=True
+    )
     session_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
     )
@@ -106,3 +117,52 @@ class ProjectDecision(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class ShareholderGroup(Base):
+    """One tenant-level governance group for cross-project shareholder decisions."""
+
+    __tablename__ = "shareholder_groups"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_shareholder_groups"),
+        Index("uq_shareholder_groups_tenant_id", "tenant_id", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    creator_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ShareholderDispatch(Base):
+    """Auditable company-level decision sent to a project's governance group."""
+
+    __tablename__ = "shareholder_dispatches"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_shareholder_dispatches"),
+        Index("ix_shareholder_dispatches_group_created", "shareholder_group_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shareholder_group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shareholder_groups.id", ondelete="CASCADE"), nullable=False
+    )
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_workflows.id", ondelete="CASCADE"), nullable=False
+    )
+    target_decision_group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="dispatched")
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
