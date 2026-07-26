@@ -74,11 +74,11 @@ async def create_task(
         description=data.description,
         type=data.type,
         priority=data.priority,
-        due_date=data.due_date,
+        due_date=None,
         created_by=current_user.id,
         supervision_target_name=data.supervision_target_name,
         supervision_channel=data.supervision_channel,
-        remind_schedule=data.remind_schedule,
+        remind_schedule=None,
     )
     db.add(task)
     await db.flush()

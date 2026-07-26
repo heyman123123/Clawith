@@ -10,7 +10,7 @@ from typing import Protocol, cast
 import uuid
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,7 @@ from app.services.agent_runtime.delivery import (
     DeliveryRequest,
     deliver_runtime_message,
 )
+from app.services.agent_runtime.retry_classifier import is_retryable_error_code
 from app.services.agent_runtime.state import runtime_messages_as_json
 from app.services.agent_runtime.tool_execution import sanitize_tool_arguments
 from app.services.builtin_tool_definitions import builtin_sensitive_paths
@@ -455,6 +456,20 @@ async def _record_direct_tool_history(
         )
 
 
+async def _mark_run_failed_retryability(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    run_id: uuid.UUID,
+    error_code: str | None,
+) -> None:
+    await db.execute(
+        update(AgentRun)
+        .where(AgentRun.tenant_id == tenant_id, AgentRun.id == run_id)
+        .values(failed_retryable=is_retryable_error_code(error_code))
+    )
+
+
 async def _record_lifecycle_events(
     db,
     *,
@@ -549,6 +564,14 @@ async def _record_lifecycle_events(
             .on_conflict_do_nothing()
         )
         await db.execute(statement)
+        if event_type == "run_failed":
+            error_code = _text_field(payload.get("error_code")) or _text_field(payload.get("reason"))
+            await _mark_run_failed_retryability(
+                db,
+                tenant_id=run.tenant_id,
+                run_id=run.run_id,
+                error_code=error_code,
+            )
 
 
 class RuntimeCheckpointSideEffects:
@@ -616,6 +639,12 @@ class RuntimeCheckpointSideEffects:
                 created_at=datetime.now(UTC),
             )
             .on_conflict_do_nothing()
+        )
+        await _mark_run_failed_retryability(
+            db,
+            tenant_id=run.tenant_id,
+            run_id=run.run_id,
+            error_code=error_code,
         )
         status_result = await db.execute(
             select(AgentRun.delivery_status).where(

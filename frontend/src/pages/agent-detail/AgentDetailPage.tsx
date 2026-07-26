@@ -77,7 +77,9 @@ import {
     normalizeRuntimeError,
     runtimeErrorDisablesReconnect,
     runtimeErrorMarksAgentExpired,
+    runtimeErrorRetryable,
 } from '../../services/runtimeError';
+import { retryAgentRun } from '../../services/agentRunApi';
 
 const WORKSPACE_TOOLS = new Set([
     'write_file',
@@ -2870,6 +2872,7 @@ export default function AgentDetailPage() {
     };
     interface ChatMsg { id?: string; role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolCallId?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; toolThinking?: string; thinking?: string; imageUrl?: string; timestamp?: string; runtimeError?: ReturnType<typeof normalizeRuntimeError>; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+    const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
     const getToolTargetKey = (args: any): string => {
         if (!args) return '';
         const parsed = typeof args === 'string'
@@ -4075,6 +4078,33 @@ export default function AgentDetailPage() {
             scheduleComposerFocus();
         }
     }, [activeTab, activeSession?.id, scheduleComposerFocus]);
+
+    const handleRetryRun = async (runId: string) => {
+        if (!runId || retryingRunId) return;
+        setRetryingRunId(runId);
+        try {
+            const result = await retryAgentRun(runId, 'fresh_context');
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'attach_run', run_id: result.run_id }));
+            }
+            setChatMessages((prev) => [
+                ...prev,
+                {
+                    role: 'assistant',
+                    content: t('agent.chat.retryStarted', '已发起重试，正在重新执行…'),
+                    timestamp: new Date().toISOString(),
+                },
+            ]);
+        } catch (err: any) {
+            toast.error(t('agent.chat.retryFailed', '重试失败'), {
+                details: String(err?.message || err),
+            });
+        } finally {
+            setRetryingRunId(null);
+        }
+    };
+
     // Auto-show button when history messages overflow the container
     useEffect(() => {
         const el = historyContainerRef.current;
@@ -4094,6 +4124,7 @@ export default function AgentDetailPage() {
     // Memoized component for each chat message to avoid re-renders while typing
     const ChatMessageItem = React.useMemo(() => React.memo(({
         msg, i, isLeft, t, senderLabel, avatarText, forceSenderLabel = false, hideAvatar = false, hideDistill = false,
+        onRetryRun, retryingRunId = null,
     }: {
         msg: any;
         i: number;
@@ -4106,6 +4137,8 @@ export default function AgentDetailPage() {
         // True when this message's turn already renders a propose_experience_draft card,
         // which is itself the review entry point — the manual 沉淀 button would be redundant.
         hideDistill?: boolean;
+        onRetryRun?: (runId: string) => void;
+        retryingRunId?: string | null;
     }) => {
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const isImage = msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
@@ -4115,6 +4148,12 @@ export default function AgentDetailPage() {
         const runtimeDiagnostics = msg.runtimeError
             ? formatRuntimeErrorDiagnostics(msg.runtimeError)
             : '';
+        const canRetry = !!(
+            msg.runtimeError
+            && msg.runtimeError.runId
+            && runtimeErrorRetryable(msg.runtimeError)
+            && onRetryRun
+        );
 
         // Parse [image_data:data:image/...;base64,...] markers from user message content.
         // The backend persists these markers in the DB to preserve multimodal context
@@ -4209,6 +4248,19 @@ export default function AgentDetailPage() {
                                             <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
                                                 {runtimeDiagnostics}
                                             </div>
+                                        )}
+                                        {canRetry && (
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm"
+                                                style={{ marginTop: '8px' }}
+                                                disabled={retryingRunId === msg.runtimeError.runId}
+                                                onClick={() => onRetryRun?.(msg.runtimeError.runId)}
+                                            >
+                                                {retryingRunId === msg.runtimeError.runId
+                                                    ? t('agent.chat.retrying', '重试中…')
+                                                    : t('agent.chat.retry', '🔁 重试')}
+                                            </button>
                                         )}
                                         {expCiteIds.length > 0 && <ExperienceCitations ids={expCiteIds} />}
                                     </>
@@ -6790,6 +6842,8 @@ export default function AgentDetailPage() {
                                                                     avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
                                                                     forceSenderLabel={isHumanReadonly}
                                                                     hideDistill={proposeTurnIdx.has(i)}
+                                                                    onRetryRun={handleRetryRun}
+                                                                    retryingRunId={retryingRunId}
                                                                 />
                                                             </React.Fragment>
                                                         );
@@ -7007,6 +7061,8 @@ export default function AgentDetailPage() {
                                                                             avatarText={((agent as any)?.name || 'Agent')[0]}
                                                                             hideAvatar={hideAssistantAvatar}
                                                                             hideDistill={prevGroupHasPropose}
+                                                                            onRetryRun={handleRetryRun}
+                                                                            retryingRunId={retryingRunId}
                                                                         />
                                                                     )}
                                                                 </React.Fragment>
@@ -7023,6 +7079,8 @@ export default function AgentDetailPage() {
                                                                 avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
                                                                 hideAvatar={hideAssistantAvatar}
                                                                 hideDistill={prevGroupHasPropose}
+                                                                onRetryRun={handleRetryRun}
+                                                                retryingRunId={retryingRunId}
                                                             />
                                                         );
                                                     });

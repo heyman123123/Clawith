@@ -74,6 +74,15 @@ class ChatSession(Base):
         ForeignKey("groups.id", name="fk_chat_sessions_group_id_groups"),
         nullable=True,
     )
+    parent_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "chat_sessions.id",
+            name="fk_chat_sessions_parent_session_id_chat_sessions",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     agent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True
     )

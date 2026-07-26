@@ -12,6 +12,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from loguru import logger
 from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
@@ -228,6 +229,40 @@ async def self_create_company(
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         await db.flush()
         await registration_service.bind_org_member(current_user)
+
+    try:
+        from app.services.hr_review_board_seeder import ensure_hr_review_board
+
+        seed_user = new_user if "new_user" in locals() else current_user
+        await ensure_hr_review_board(
+            db,
+            tenant_id=tenant.id,
+            creator_id=seed_user.id,
+            model_id=tenant.default_model_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Tenants] HR review board seed failed for tenant {}: {}",
+            tenant.id,
+            exc,
+        )
+
+    try:
+        from app.services.governance_seeder import seed_governance_role_pool_for_tenant
+
+        seed_user = new_user if "new_user" in locals() else current_user
+        await seed_governance_role_pool_for_tenant(
+            db,
+            tenant_id=tenant.id,
+            creator_id=seed_user.id,
+            model_id=tenant.default_model_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Tenants] Governance role pool seed failed for tenant {}: {}",
+            tenant.id,
+            exc,
+        )
 
     await db.commit()
 

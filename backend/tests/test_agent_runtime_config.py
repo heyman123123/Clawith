@@ -31,7 +31,7 @@ def test_runtime_settings_have_safe_confirmed_defaults() -> None:
     assert settings.AGENT_RUNTIME_COMMAND_CLAIM_RENEW_SECONDS == 20
     assert settings.AGENT_RUNTIME_COMMAND_MAX_ATTEMPTS == 5
     assert settings.AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO == 0.85
-    assert settings.AGENT_RUNTIME_SESSION_RECENT_MESSAGES == 20
+    assert settings.AGENT_RUNTIME_SESSION_RECENT_MESSAGES == 12
     assert settings.AGENT_RUNTIME_SESSION_COMPACT_MESSAGE_THRESHOLD is None
     assert settings.AGENT_RUNTIME_RUN_COMPACT_MESSAGE_THRESHOLD is None
     assert settings.AGENT_RUNTIME_RUN_COMPACT_TOOL_RESULT_BYTES is None
@@ -40,6 +40,15 @@ def test_runtime_settings_have_safe_confirmed_defaults() -> None:
     assert settings.AGENT_RUNTIME_FALLBACK_CONTEXT_WINDOW_TOKENS == 131072
     assert settings.MULTI_AGENT_COMPACT_MODEL_ID is None
     assert settings.MULTI_AGENT_PLANNING_MODEL_ID is None
+    assert settings.GROUP_CONTEXT_ANNOUNCEMENT_MAX_CHARS == 8000
+    assert settings.GROUP_CONTEXT_MEMORY_MAX_CHARS == 8000
+    assert settings.GROUP_CONTEXT_WORKSPACE_MAX_ENTRIES == 40
+    assert settings.GROUP_CONTEXT_PLAN_PROMPT_MAX_CHARS == 2000
+    assert settings.AGENT_RUNTIME_SOUL_MAX_CHARS is None
+    assert settings.AGENT_RUNTIME_INPUT_OPTIMIZE_ENABLED is True
+    assert settings.AGENT_RUNTIME_USE_COMPACT_GROUP_INSTRUCTION is True
+    assert settings.AGENT_RUNTIME_PENDING_MESSAGE_MAX_ITEMS == 10
+    assert settings.AGENT_RUNTIME_PENDING_MESSAGE_MAX_CHARS == 500
     assert settings.AGENT_RUNTIME_CHECKPOINT_RETENTION_DAYS == 30
     assert settings.AGENT_RUNTIME_EVENT_PAYLOAD_MAX_BYTES == 16384
     assert settings.AGENT_RUNTIME_TOOL_RESULT_INLINE_MAX_BYTES == 8192

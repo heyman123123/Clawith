@@ -56,6 +56,9 @@ class Task(Base):
     project_workflow_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("project_workflows.id", ondelete="CASCADE"), nullable=True
     )
+    milestone_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_milestones.id", ondelete="SET NULL"), nullable=True
+    )
     group_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=True
     )

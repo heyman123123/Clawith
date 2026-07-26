@@ -6,10 +6,15 @@ from collections.abc import Collection
 from pathlib import Path
 import uuid
 
+from app.config import get_settings
 from app.services.storage import get_storage_backend, normalize_storage_key
 
 
-async def _read_file_safe(key: str, max_chars: int = 3000) -> str:
+def _soul_max_chars() -> int | None:
+    return get_settings().AGENT_RUNTIME_SOUL_MAX_CHARS
+
+
+async def _read_file_safe(key: str, max_chars: int | None = 3000) -> str:
     """Read a storage-backed text file, returning empty text when unavailable."""
     storage = get_storage_backend()
     if not await storage.exists(key) or not await storage.is_file(key):
@@ -22,7 +27,7 @@ async def _read_file_safe(key: str, max_chars: int = 3000) -> str:
                 errors="replace",
             )
         ).strip()
-        if len(content) > max_chars:
+        if max_chars is not None and max_chars > 0 and len(content) > max_chars:
             return content[:max_chars] + "\n...(truncated)"
         return content
     except Exception:
@@ -453,7 +458,7 @@ async def build_agent_context(
 
     soul = await _read_file_safe(
         normalize_storage_key(f"{agent_id}/soul.md"),
-        30000,
+        _soul_max_chars(),
     )
     if soul.startswith("# "):
         soul = "\n".join(soul.split("\n")[1:]).strip()

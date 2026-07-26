@@ -15,6 +15,28 @@ export interface TeamPlan {
     wake_up_message: string;
 }
 
+export interface TeamPlanProposal {
+    id: string;
+    label: string;
+    roles: ProjectTeamRole[];
+}
+
+export interface HrTeamPlanSession {
+    hr_review_session_id: string;
+    group_id: string;
+    session_id: string;
+    status: string;
+    proposals: TeamPlanProposal[];
+}
+
+export interface TeamPlanSelection {
+    roles: ProjectTeamRole[];
+    wake_up_message: string;
+    project_name: string;
+    requirements: string;
+    planner_name?: string;
+}
+
 export interface ProjectWorkflowMember {
     agent_id: string;
     role_key: string;

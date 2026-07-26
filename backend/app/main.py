@@ -398,6 +398,7 @@ from app.api.skills import router as skills_router
 from app.api.users import router as users_router
 from app.api.chat_sessions import router as chat_sessions_router
 from app.api.groups import router as groups_router
+from app.api.agent_runs import router as agent_runs_router
 from app.api.slack import router as slack_router
 from app.api.discord_bot import router as discord_router
 from app.api.dingtalk import router as dingtalk_router
@@ -420,6 +421,7 @@ from app.api.agentbay_control import router as agentbay_control_router
 from app.api.okr import router as okr_router
 from app.api.onboarding import router as onboarding_router
 from app.api.projects import router as projects_router
+from app.api.hr_review import router as hr_review_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
@@ -456,7 +458,9 @@ app.include_router(triggers_router)
 app.include_router(focus_router, prefix=settings.API_PREFIX)
 app.include_router(chat_sessions_router)
 app.include_router(groups_router)
+app.include_router(agent_runs_router)
 app.include_router(projects_router)
+app.include_router(hr_review_router)
 app.include_router(plaza_router)
 app.include_router(experience_router)
 app.include_router(notification_router, prefix=settings.API_PREFIX)

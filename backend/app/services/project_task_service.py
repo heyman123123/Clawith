@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 import re
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,8 +109,12 @@ async def create_project_task_flow(
         title=f"项目任务拆解与首轮分派：{label}",
         description=(
             f"项目目标：{normalized_goal}\n\n"
-            "你是项目总负责人。先依据团队成员职责拆解目标、明确每项可验证交付物、"
-            "处理范围和依赖风险；不要用第几天或固定日期作为推进条件。"
+            "你是项目总负责人。完全按依赖完成度推进，不要用第几天或固定日期作为推进条件。"
+            "先依据团队成员职责拆解目标、明确每项可验证交付物、处理范围和依赖风险；"
+            "拆任务时必须同时输出 milestones 清单（标题 + 顺序 + 各 milestone 包含的任务），"
+            "进度只看里程碑与 DAG。"
+            "在最终输出末尾附上 JSON："
+            '{"milestones":[{"title":"阶段名","order_index":0,"task_titles":["任务标题"]}]}'
             "完成后给出本轮分派依据和关键决策。"
         ),
         type="todo",
@@ -139,6 +144,9 @@ async def create_project_task_flow(
                 f"你的项目职责：{agent.role_description or member.role_title}\n\n"
                 "请只完成你的工作包，产出可验证的结论、清单、方案或文件；"
                 "说明关键假设、风险和需要项目总负责人决策的事项。"
+                "可复用交付文件优先用 `group_write_workspace_file` 写入当前群 Workspace"
+                "（建议路径 deliverables/…）；若你写在自己的私有 Workspace，"
+                "任务完成时平台会自动镜像到群 Workspace 的 deliverables/{task_id}/ 下。"
                 "若必须由用户拍板，请单独使用“【需要用户决策】事项、选项和你的建议”标记。"
                 "任务完成后，结果会自动向项目总负责人回报。"
             ),
@@ -164,7 +172,8 @@ async def create_project_task_flow(
         description=(
             f"项目目标：{normalized_goal}\n\n"
             "汇总各工作包的真实交付、未决风险与下一步建议，向用户提交项目阶段完成回报。"
-            "结论必须基于已完成任务的产物，不得用固定日期替代完成条件。"
+            "结论必须基于已完成任务的产物（优先查阅群 Workspace 的 deliverables/ 目录），"
+            "不得用固定日期替代完成条件。"
         ),
         type="todo",
         status="blocked",
@@ -204,6 +213,7 @@ async def advance_project_task(
     tenant_id: uuid.UUID,
     succeeded: bool,
     detail: str,
+    run_id: uuid.UUID | None = None,
 ) -> None:
     """Report one terminal project Task and queue all newly-unblocked Tasks."""
     if task.project_workflow_id is None or task.group_id is None or task.session_id is None:
@@ -250,9 +260,36 @@ async def advance_project_task(
     if sender is None:
         return
 
+    synced_paths: list[str] = []
+    if succeeded and run_id is not None:
+        from app.services.project_deliverable_sync import sync_task_deliverables_to_group
+
+        try:
+            synced = await sync_task_deliverables_to_group(
+                db,
+                tenant_id=tenant_id,
+                task=task,
+                run_id=run_id,
+                actor_participant_id=sender.id,
+            )
+            synced_paths = [item.group_path for item in synced]
+        except Exception:
+            # Delivery report must still go out even if mirror fails.
+            from loguru import logger
+
+            logger.exception(
+                "[ProjectTask] deliverable sync failed for task={} run={}",
+                task.id,
+                run_id,
+            )
+
     if succeeded:
         prefix = "✅ 项目最终回报" if task.is_project_closure else "✅ 任务完成"
         content = f"{prefix}：{task.title}\n\n交付：\n{detail}"
+        if synced_paths:
+            content += "\n\n📂 群 Workspace 交付物：\n" + "\n".join(
+                f"- `{path}`" for path in synced_paths
+            )
         mention_ids: list[uuid.UUID] = []
         if task.report_to_agent_id is not None:
             leader_participant = participant_map.get(task.report_to_agent_id)
@@ -291,6 +328,12 @@ async def advance_project_task(
         sender_participant_id=sender.id,
         content=content,
     )
+    if succeeded and task.project_workflow_id is not None:
+        from app.services.project_milestone_service import ingest_leader_milestones, refresh_milestone_statuses
+
+        if not task.is_project_closure and not (task.dependency_task_ids or []):
+            await ingest_leader_milestones(db, task=task, detail=detail)
+        await refresh_milestone_statuses(db, workflow_id=task.project_workflow_id)
 
 
 async def _report_project_outcome_to_decision_group(
@@ -354,7 +397,7 @@ async def capture_project_decisions(
     task: Task,
     detail: str,
 ) -> list[ProjectDecision]:
-    """Turn an explicit task-output marker into a user decision inbox item."""
+    """Record explicit decision markers for audit only (no pending inbox items)."""
     if task.project_workflow_id is None or task.group_id is None or task.session_id is None:
         return []
     match = _USER_DECISION_MARKER.search(detail)
@@ -363,8 +406,6 @@ async def capture_project_decisions(
     context = match.group(1).strip()[:_DETAIL_LIMIT]
     if not context:
         return []
-    # Terminal task handling is receipt-idempotent; this guard also prevents a
-    # repaired output from generating the same decision twice.
     existing = await db.scalar(
         select(ProjectDecision.id).where(
             ProjectDecision.task_id == task.id,
@@ -384,7 +425,9 @@ async def capture_project_decisions(
         requesting_agent_id=task.agent_id,
         title=_compact(context.splitlines()[0], 300),
         context=context,
-        status="pending",
+        status="answered",
+        response="captured_for_audit",
+        responded_at=datetime.now(UTC),
     )
     db.add(decision)
     return [decision]

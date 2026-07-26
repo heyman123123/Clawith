@@ -111,6 +111,8 @@ class Agent(Base):
     # System agent flag — system agents (e.g. OKR Agent) cannot be deleted by users
     # and their system triggers are protected from user deletion.
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Reusable governance agents may be referenced across multiple project groups.
+    reusable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
     # Access model:
     # - company: all platform users and non-private tenant agents can access; Plaza is enabled.

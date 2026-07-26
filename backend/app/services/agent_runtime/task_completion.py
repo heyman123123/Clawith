@@ -172,6 +172,7 @@ class TaskRuntimeCompletionHandler:
                         tenant_id=run.tenant_id,
                         succeeded=status == "completed",
                         detail=detail,
+                        run_id=run.run_id,
                     )
 
 

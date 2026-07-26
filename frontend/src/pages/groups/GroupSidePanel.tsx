@@ -350,8 +350,18 @@ export default function GroupSidePanel({
                         {overview && <>
                             <section className="project-dashboard-hero">
                                 <div><span>{t('groups.projectPulse', '项目脉冲')}</span><strong>{overview.project_name}</strong><p>{t('groups.projectDashboardHint', '执行进展、负责人、交付成效与风险在此同步。')}</p></div>
-                                <div className="project-progress-orb"><b>{overview.progress_percent}%</b><small>{t('groups.projectProgress', '已完成')}</small></div>
+                                <div className="project-progress-orb"><b>{overview.milestones.length ? overview.milestone_progress_percent : overview.progress_percent}%</b><small>{overview.milestones.length ? t('groups.milestoneProgress', '里程碑') : t('groups.projectProgress', '已完成')}</small></div>
                             </section>
+                            {overview.milestones.length > 0 && (
+                                <section className="project-milestone-strip" aria-label={t('groups.milestoneStrip', '里程碑进度')}>
+                                    {overview.milestones.map((milestone) => (
+                                        <article key={milestone.id} className={`project-milestone-chip ${milestone.status}`} title={milestone.description || milestone.title}>
+                                            <span className="project-milestone-chip-title">{milestone.title}</span>
+                                            <span className="project-milestone-chip-meta">{milestone.completed_tasks}/{milestone.total_tasks || '—'}</span>
+                                        </article>
+                                    ))}
+                                </section>
+                            )}
                             <div className="project-dashboard-metrics">
                                 <div><span>{t('groups.completedTasks', '已完成')}</span><strong>{overview.completed_tasks}<small>/{overview.total_tasks}</small></strong></div>
                                 <div><span>{t('groups.activeTasks', '进行中')}</span><strong>{overview.active_tasks}</strong></div>
@@ -450,9 +460,13 @@ export default function GroupSidePanel({
 
                 {tab === 'decisions' && (
                     <div className="project-panel-list">
+                        <p className="group-member-hint" style={{ marginBottom: 12 }}>
+                            {t('groups.decisionAuditHint', '历史审计（不再生成待办）')}
+                        </p>
                         {decisions === null && <div className="group-member-hint">{t('common.loading', '加载中...')}</div>}
                         {decisionsError && <div className="group-member-hint">{t('groups.noProjectDecisions', '此群没有待你决策的事项。')}</div>}
                         {decisions?.map((decision) => {
+                            const isPending = decision.status === 'pending';
                             const draft = decisionDrafts[decision.id] || '';
                             const isGenerating = generatingDecisionId === decision.id;
                             const isReplying = replyingDecisionId === decision.id;
@@ -462,58 +476,69 @@ export default function GroupSidePanel({
                                     <div className="project-decision-kicker">
                                         <IconCircleDot size={13} stroke={1.8} />
                                         <span>{decision.requesting_agent_name || t('groups.projectLeader', '项目群主')} {t('groups.decisionRequested', '请求决策')}</span>
+                                        {!isPending && (
+                                            <span className="group-badge-deleted">{decision.status}</span>
+                                        )}
                                     </div>
                                     <h4>{decision.title}</h4>
                                     <p>{decision.context}</p>
-                                    <div className="project-decision-ai-hint">
-                                        <IconSparkles size={13} stroke={1.8} />
-                                        {t('groups.decisionAiHint', 'AI 会生成建议内容；在决策群审阅确认后，再下发项目群执行。')}
-                                    </div>
-                                    <div className="project-decision-input-wrap">
-                                        <textarea
-                                            className="project-decision-input"
-                                            value={draft}
-                                            disabled={isGenerating || isReplying}
-                                            aria-label={t('groups.decisionAiInputLabel', '给群主的修改指令')}
-                                            placeholder={t('groups.decisionAiPlaceholder', '例如：将测试预算改为 300 美元，优先验证美国市场，并暂停其他渠道。')}
-                                            onChange={(event) => {
-                                                setDecisionDrafts((current) => ({
-                                                    ...current,
-                                                    [decision.id]: event.target.value,
-                                                }));
-                                                clearDecisionError(decision.id);
-                                            }}
-                                            onKeyDown={(event) => {
-                                                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                                                    event.preventDefault();
-                                                    submitDecisionModification(decision);
-                                                }
-                                            }}
-                                        />
+                                    {!isPending && decision.response && (
+                                        <div className="project-decision-readonly">
+                                            <strong>{t('groups.decisionResponse', '决策回执')}</strong>
+                                            <p>{decision.response}</p>
+                                        </div>
+                                    )}
+                                    {isPending && <>
+                                        <div className="project-decision-ai-hint">
+                                            <IconSparkles size={13} stroke={1.8} />
+                                            {t('groups.decisionAiHint', 'AI 会生成建议内容；在决策群审阅确认后，再下发项目群执行。')}
+                                        </div>
+                                        <div className="project-decision-input-wrap">
+                                            <textarea
+                                                className="project-decision-input"
+                                                value={draft}
+                                                disabled={isGenerating || isReplying}
+                                                aria-label={t('groups.decisionAiInputLabel', '给群主的修改指令')}
+                                                placeholder={t('groups.decisionAiPlaceholder', '例如：将测试预算改为 300 美元，优先验证美国市场，并暂停其他渠道。')}
+                                                onChange={(event) => {
+                                                    setDecisionDrafts((current) => ({
+                                                        ...current,
+                                                        [decision.id]: event.target.value,
+                                                    }));
+                                                    clearDecisionError(decision.id);
+                                                }}
+                                                onKeyDown={(event) => {
+                                                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                                                        event.preventDefault();
+                                                        submitDecisionModification(decision);
+                                                    }
+                                                }}
+                                            />
+                                            <button
+                                                type="button"
+                                                className="project-decision-ai-action"
+                                                disabled={isGenerating || isReplying}
+                                                title={t('groups.generateDecisionDraft', 'AI 生成建议')}
+                                                aria-label={t('groups.generateDecisionDraft', 'AI 生成建议')}
+                                                onClick={() => generateDecisionDraft(decision)}
+                                            >
+                                                <IconSparkles size={13} />
+                                                {isGenerating ? t('groups.generatingDecisionDraft', '生成中…') : 'AI'}
+                                            </button>
+                                        </div>
+                                        {replyError && <div className="project-decision-error">{replyError}</div>}
                                         <button
                                             type="button"
-                                            className="project-decision-ai-action"
-                                            disabled={isGenerating || isReplying}
-                                            title={t('groups.generateDecisionDraft', 'AI 生成建议')}
-                                            aria-label={t('groups.generateDecisionDraft', 'AI 生成建议')}
-                                            onClick={() => generateDecisionDraft(decision)}
+                                            className="project-decision-submit"
+                                            disabled={!draft.trim() || isGenerating || isReplying}
+                                            onClick={() => submitDecisionModification(decision)}
                                         >
-                                            <IconSparkles size={13} />
-                                            {isGenerating ? t('groups.generatingDecisionDraft', '生成中…') : 'AI'}
+                                            <IconCheck size={14} stroke={1.8} />
+                                            {t('groups.sendToProjectLeader', '确认后下发项目群')}
                                         </button>
-                                    </div>
-                                    {replyError && <div className="project-decision-error">{replyError}</div>}
-                                    <button
-                                        type="button"
-                                        className="project-decision-submit"
-                                        disabled={!draft.trim() || isGenerating || isReplying}
-                                        onClick={() => submitDecisionModification(decision)}
-                                    >
-                                        <IconCheck size={14} stroke={1.8} />
-                                        {t('groups.sendToProjectLeader', '确认后下发项目群')}
-                                    </button>
-                                    {isGenerating && <div className="project-decision-sending"><IconSparkles size={13} /> {t('groups.generatingDecisionDraft', '正在生成建议…')}</div>}
-                                    {isReplying && <div className="project-decision-sending"><IconCheck size={13} /> {t('groups.sendingDecision', '正在提交…')}</div>}
+                                        {isGenerating && <div className="project-decision-sending"><IconSparkles size={13} /> {t('groups.generatingDecisionDraft', '正在生成建议…')}</div>}
+                                        {isReplying && <div className="project-decision-sending"><IconCheck size={13} /> {t('groups.sendingDecision', '正在提交…')}</div>}
+                                    </>}
                                 </article>
                             );
                         })}

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, PrimaryKeyConstraint, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, PrimaryKeyConstraint, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -77,6 +77,35 @@ class ProjectWorkflowMember(Base):
     role_title: Mapped[str] = mapped_column(String(100), nullable=False)
     is_group_leader: Mapped[bool] = mapped_column(nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ProjectMilestone(Base):
+    """A dependency-driven phase marker for a project workflow."""
+
+    __tablename__ = "project_milestones"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_project_milestones"),
+        Index("ix_project_milestones_workflow_order", "workflow_id", "order_index"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("project_workflows.id", name="fk_project_milestones_workflow_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # pending | active | done | cancelled
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    created_by_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", name="fk_project_milestones_created_by_agent_id_agents", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ProjectDecision(Base):

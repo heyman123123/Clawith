@@ -21,6 +21,7 @@ from app.models.org import AgentAgentRelationship
 from app.models.participant import Participant
 from app.models.project import (
     ProjectDecision,
+    ProjectMilestone,
     ProjectWorkflow,
     ProjectWorkflowMember,
     ShareholderDispatch,
@@ -37,11 +38,18 @@ from app.services.participant_identity import get_or_create_user_participant
 from app.services.project_team_builder import (
     HRPlanningError,
     build_team_wakeup_message,
-    plan_team_with_hr,
     validate_team_plan,
+)
+from app.services.hr_review_session_service import (
+    HrReviewError,
+    generate_team_building_proposals,
+    hr_session_to_dict,
+    open_team_building_session,
 )
 from app.services.access_relationships import ensure_access_granted_platform_relationships
 from app.services.agent_manager import agent_manager
+from app.services.decision_record_service import finalize_decision_record
+from app.services.governance_membership import select_decision_group_members
 from app.services.llm.model_resolution import load_active_model
 from app.services.llm.utils import LLMMessage, create_llm_client, get_model_api_key
 
@@ -73,6 +81,14 @@ class TeamPlanOut(BaseModel):
     requirements: str
     roles: list[TeamRoleIn]
     wake_up_message: str
+
+
+class HrTeamPlanSessionOut(BaseModel):
+    hr_review_session_id: uuid.UUID
+    group_id: uuid.UUID
+    session_id: uuid.UUID
+    status: str
+    proposals: list
 
 
 class ProjectMemberOut(BaseModel):
@@ -126,6 +142,18 @@ class ProjectBlockerOut(BaseModel):
     reason: str | None = None
 
 
+class ProjectMilestoneOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    description: str | None
+    order_index: int
+    status: str
+    completed_tasks: int
+    total_tasks: int
+    progress_percent: int
+    completed_at: datetime | None
+
+
 class ProjectGroupOverviewOut(BaseModel):
     project_name: str
     total_tasks: int
@@ -134,6 +162,8 @@ class ProjectGroupOverviewOut(BaseModel):
     blocked_tasks: int
     failed_tasks: int
     progress_percent: int
+    milestone_progress_percent: int
+    milestones: list[ProjectMilestoneOut]
     tasks: list[ProjectBoardTaskOut]
     blockers: list[ProjectBlockerOut]
 
@@ -164,6 +194,25 @@ class ProjectDecisionOut(BaseModel):
     response: str | None
     created_at: datetime
     responded_at: datetime | None
+
+
+class DecisionRecordFinalizeIn(BaseModel):
+    decision_summary: dict
+    decision_session_id: uuid.UUID
+    project_session_id: uuid.UUID | None = None
+    participants: list = Field(default_factory=list)
+
+
+class DecisionRecordOut(BaseModel):
+    id: uuid.UUID
+    workflow_id: uuid.UUID
+    status: str
+    decision_summary: dict
+    participants: list
+    dispatched_at: datetime
+    completed_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ShareholderGroupOut(BaseModel):
@@ -432,6 +481,11 @@ async def _ensure_project_decision_group(
     _, leader_agent, leader_participant = next(
         item for item in agents if item[0]["is_group_leader"]
     )
+    governance_members = await select_decision_group_members(
+        db,
+        tenant_id=workflow.tenant_id,
+        leader_participant=leader_participant,
+    )
     try:
         decision_group = await group_chat_service.create_group(
             db,
@@ -442,7 +496,7 @@ async def _ensure_project_decision_group(
                 "项目治理与方案评审群。项目群在此汇报进展、成效与卡点；"
                 "决策群讨论确认后，由项目负责人下发给项目群执行，并向用户汇报。"
             ),
-            member_participant_ids=[participant.id for _, _, participant in agents],
+            member_participant_ids=[participant.id for participant in governance_members],
         )
     except GroupChatServiceError as exc:
         raise HTTPException(status_code=422, detail=f"决策群创建失败：{exc}") from exc
@@ -483,21 +537,36 @@ async def _ensure_project_decision_group(
     await db.flush()
 
 
-@router.post("/team-plans", response_model=TeamPlanOut)
+@router.post("/team-plans", response_model=HrTeamPlanSessionOut)
 async def create_team_plan(
     body: ProjectPlanIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    tenant_id = _tenant_id(current_user)
     try:
-        return await plan_team_with_hr(
+        hr_session = await open_team_building_session(
             db,
-            tenant_id=_tenant_id(current_user),
-            creator_id=current_user.id,
+            tenant_id=tenant_id,
+            user=current_user,
             name=body.name,
             requirements=body.requirements,
         )
-    except (ValueError, HRPlanningError) as exc:
+        hr_session = await generate_team_building_proposals(
+            db,
+            hr_session_id=hr_session.id,
+            tenant_id=tenant_id,
+            creator_id=current_user.id,
+        )
+        payload = hr_session_to_dict(hr_session)
+        return {
+            "hr_review_session_id": payload["id"],
+            "group_id": payload["group_id"],
+            "session_id": payload["session_id"],
+            "status": payload["status"],
+            "proposals": payload["proposals"],
+        }
+    except (ValueError, HRPlanningError, HrReviewError) as exc:
         # Keep failed HR attempts in the immutable operations ledger even
         # though this route returns a 422 and the normal request transaction
         # would otherwise roll back.
@@ -1227,6 +1296,33 @@ async def get_project_group_overview(
     active_tasks = sum(task.status in {"pending", "doing"} for task in board_tasks)
     blocked_tasks = sum(task.status == "blocked" for task in board_tasks)
     failed_tasks = sum(task.status == "failed" for task in board_tasks)
+    workflow_tasks = [task for task, _agent_name in rows]
+    milestone_rows = (
+        await db.execute(
+            select(ProjectMilestone)
+            .where(ProjectMilestone.workflow_id == workflow.id)
+            .order_by(ProjectMilestone.order_index.asc())
+        )
+    ).scalars().all()
+    from app.services.project_milestone_service import milestone_progress, milestone_task_progress
+
+    progress = milestone_progress(milestone_rows, workflow_tasks)
+    milestones_out = []
+    for milestone in milestone_rows:
+        task_progress = milestone_task_progress(milestone, workflow_tasks)
+        milestones_out.append(
+            ProjectMilestoneOut(
+                id=milestone.id,
+                title=milestone.title,
+                description=milestone.description,
+                order_index=milestone.order_index,
+                status=milestone.status,
+                completed_tasks=task_progress["completed"],
+                total_tasks=task_progress["total"],
+                progress_percent=task_progress["percent"],
+                completed_at=milestone.completed_at,
+            )
+        )
     return ProjectGroupOverviewOut(
         project_name=workflow.name,
         total_tasks=total_tasks,
@@ -1235,6 +1331,8 @@ async def get_project_group_overview(
         blocked_tasks=blocked_tasks,
         failed_tasks=failed_tasks,
         progress_percent=round((completed_tasks / total_tasks) * 100) if total_tasks else 0,
+        milestone_progress_percent=progress["percent"],
+        milestones=milestones_out,
         tasks=board_tasks,
         blockers=blockers,
     )

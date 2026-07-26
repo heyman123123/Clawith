@@ -342,11 +342,11 @@ class TaskCreate(BaseModel):
     description: str | None = None
     type: str = "todo"  # todo | supervision
     priority: str = "medium"
-    due_date: datetime | None = None
+    due_date: datetime | None = Field(default=None, deprecated="No longer written; progress uses dependency DAG")
     # Supervision fields
     supervision_target_name: str | None = None
     supervision_channel: str | None = None
-    remind_schedule: str | None = None
+    remind_schedule: str | None = Field(default=None, deprecated="No longer written; progress uses dependency DAG")
 
 
 class TaskOut(BaseModel):

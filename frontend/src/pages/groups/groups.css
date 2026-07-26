@@ -817,6 +817,12 @@
 .project-dashboard-metrics strong { display: block; margin-top: 4px; font-size: 18px; }
 .project-dashboard-metrics strong small { color: var(--text-tertiary); font-size: 10px; font-weight: 500; }
 .project-dashboard-metrics .risk { border-color: color-mix(in srgb, var(--danger, #dc2626) 42%, var(--border-default)); }
+.project-milestone-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.project-milestone-chip { flex: 0 0 auto; min-width: 92px; max-width: 140px; padding: 8px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-secondary); }
+.project-milestone-chip.done { border-color: color-mix(in srgb, var(--accent-primary) 42%, var(--border-default)); background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-card)); color: var(--text-primary); }
+.project-milestone-chip.active { border-color: color-mix(in srgb, var(--accent-primary) 28%, var(--border-default)); color: var(--text-primary); }
+.project-milestone-chip-title { display: block; font-size: 11px; font-weight: 600; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-milestone-chip-meta { display: block; margin-top: 4px; font-size: 10px; color: var(--text-tertiary); }
 .project-dashboard-section { display: grid; gap: 8px; }
 .project-dashboard-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: var(--text-primary); font-size: 12px; font-weight: 700; }
 .project-dashboard-section-title > span { display: inline-flex; align-items: center; gap: 5px; }
@@ -877,6 +883,83 @@
     color: var(--text-tertiary);
     font-size: var(--text-xs);
     text-align: center;
+}
+
+.project-decision-readonly {
+    margin-top: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+}
+
+.project-decision-readonly strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+}
+
+.project-decision-readonly p {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.decision-card {
+    display: grid;
+    gap: var(--space-3);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+}
+
+.decision-card-plain {
+    white-space: pre-wrap;
+}
+
+.decision-card-section {
+    display: grid;
+    gap: 6px;
+}
+
+.decision-card-section-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-sm);
+}
+
+.decision-card-icon {
+    flex: 0 0 auto;
+}
+
+.decision-card-section-body p {
+    margin: 0 0 4px;
+    padding-left: 22px;
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.decision-card-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: fit-content;
+    padding: 6px 10px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.decision-card-link:hover {
+    background: var(--bg-hover);
 }
 
 .group-invite-btn {

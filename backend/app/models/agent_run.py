@@ -151,6 +151,13 @@ class AgentRun(Base):
     )
     delivery_status: Mapped[str] = mapped_column(String(24), nullable=False)
     delivery_target: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    retry_of_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_runs.id", name="fk_agent_runs_retry_of_run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    retry_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    failed_retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -169,6 +176,7 @@ Index(
 Index("ix_agent_runs_session_created_at", AgentRun.session_id, AgentRun.created_at.desc())
 Index("ix_agent_runs_parent_run_id", AgentRun.parent_run_id)
 Index("ix_agent_runs_root_run_id", AgentRun.root_run_id)
+Index("ix_agent_runs_retry_of", AgentRun.retry_of_run_id)
 Index("ix_agent_runs_source", AgentRun.source_type, AgentRun.source_id)
 Index(
     "uq_agent_runs_source_execution",

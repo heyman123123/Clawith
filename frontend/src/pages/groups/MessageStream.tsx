@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useRef } from 'react
 import { useTranslation } from 'react-i18next';
 import { IconRobot } from '@tabler/icons-react';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import DecisionCard from '../../components/DecisionCard';
 import type { GroupMember, GroupMessage } from '../../types/group';
 
 interface MessageStreamProps {
@@ -185,16 +186,18 @@ export default function MessageStream({
                                 </span>
                             </div>
                             <div className="group-message-bubble">
-                                {isAgent
-                                    ? <MarkdownRenderer
-                                        content={message.content}
-                                        mentionNames={message.mentions
-                                            .map((mention) => mention.display_name)
-                                            .filter((name): name is string => Boolean(name))}
-                                    />
-                                    : <span className="group-message-text">
-                                        {renderContentWithMentions(message.content, message.mentions)}
-                                    </span>}
+                                {isAgent && message.content.includes('<!--decision_sync:')
+                                    ? <DecisionCard content={message.content} />
+                                    : isAgent
+                                        ? <MarkdownRenderer
+                                            content={message.content}
+                                            mentionNames={message.mentions
+                                                .map((mention) => mention.display_name)
+                                                .filter((name): name is string => Boolean(name))}
+                                        />
+                                        : <span className="group-message-text">
+                                            {renderContentWithMentions(message.content, message.mentions)}
+                                        </span>}
                             </div>
                         </div>
                     </div>

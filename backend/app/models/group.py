@@ -55,6 +55,7 @@ class Group(Base):
         ForeignKey("agents.id", name="fk_groups_owner_agent_id_agents", ondelete="SET NULL"),
         nullable=True,
     )
+    group_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

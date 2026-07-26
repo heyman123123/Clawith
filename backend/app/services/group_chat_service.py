@@ -862,6 +862,7 @@ async def create_group_session(
     group_id: uuid.UUID,
     actor_participant_id: uuid.UUID,
     title: str | None = None,
+    parent_session_id: uuid.UUID | None = None,
 ) -> ChatSession:
     """Create a group session; the first active session becomes primary."""
     await _active_group(db, tenant_id=tenant_id, group_id=group_id, lock=True)
@@ -905,6 +906,7 @@ async def create_group_session(
         source_channel="web",
         is_group=True,
         is_primary=is_primary,
+        parent_session_id=parent_session_id,
         deleted_at=None,
         created_at=now,
         updated_at=now,

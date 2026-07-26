@@ -17,6 +17,7 @@ from app.services.agent_runtime.contracts import (
     RuntimeEventCursor,
 )
 from app.services.agent_runtime.event_stream import DatabaseRuntimeEventStream
+from app.services.agent_runtime.retry_classifier import is_retryable_error_code
 
 
 ChatStreamStatus = Literal["completed", "failed", "cancelled", "waiting_user"]
@@ -97,7 +98,7 @@ def _error_context(
     agent_id: uuid.UUID,
     stage: str,
     trace_id: str | None,
-) -> dict[str, str | None]:
+) -> dict[str, str | bool | None]:
     return {
         "code": code,
         "message": message,
@@ -105,6 +106,7 @@ def _error_context(
         "agent_id": str(agent_id),
         "stage": stage,
         "trace_id": trace_id,
+        "retryable": is_retryable_error_code(code),
     }
 
 

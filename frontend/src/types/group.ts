@@ -147,6 +147,18 @@ export interface ProjectGroupBoardTask extends ProjectGroupTask {
     latest_outcome: string | null;
 }
 
+export interface ProjectGroupMilestone {
+    id: string;
+    title: string;
+    description: string | null;
+    order_index: number;
+    status: 'pending' | 'active' | 'done' | 'cancelled' | string;
+    completed_tasks: number;
+    total_tasks: number;
+    progress_percent: number;
+    completed_at: string | null;
+}
+
 export interface ProjectGroupOverview {
     project_name: string;
     total_tasks: number;
@@ -155,6 +167,8 @@ export interface ProjectGroupOverview {
     blocked_tasks: number;
     failed_tasks: number;
     progress_percent: number;
+    milestone_progress_percent: number;
+    milestones: ProjectGroupMilestone[];
     tasks: ProjectGroupBoardTask[];
     blockers: Array<{
         task_id: string;

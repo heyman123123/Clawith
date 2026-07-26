@@ -141,7 +141,7 @@ class Settings(BaseSettings):
     AGENT_RUNTIME_CHANNEL_DELIVERY_MAX_ATTEMPTS: int = Field(default=8, gt=0)
     AGENT_RUNTIME_CHANNEL_DELIVERY_SCAN_SECONDS: float = Field(default=0.5, gt=0)
     AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO: float = Field(default=0.85, gt=0, le=1)
-    AGENT_RUNTIME_SESSION_RECENT_MESSAGES: int = Field(default=20, gt=0)
+    AGENT_RUNTIME_SESSION_RECENT_MESSAGES: int = Field(default=12, gt=0)
     AGENT_RUNTIME_SESSION_COMPACT_MESSAGE_THRESHOLD: int | None = Field(default=None, gt=0)
     AGENT_RUNTIME_SESSION_COMPACT_SCAN_SECONDS: float = Field(default=5.0, gt=0)
     AGENT_RUNTIME_SESSION_COMPACT_SCAN_BATCH_SIZE: int = Field(default=50, gt=0, le=500)
@@ -152,9 +152,16 @@ class Settings(BaseSettings):
     AGENT_RUNTIME_FALLBACK_CONTEXT_WINDOW_TOKENS: int = Field(default=131072, gt=0)
     MULTI_AGENT_COMPACT_MODEL_ID: uuid.UUID | None = None
     MULTI_AGENT_PLANNING_MODEL_ID: uuid.UUID | None = None
-    GROUP_CONTEXT_ANNOUNCEMENT_MAX_CHARS: int = Field(default=12000, gt=0)
-    GROUP_CONTEXT_MEMORY_MAX_CHARS: int = Field(default=12000, gt=0)
-    GROUP_CONTEXT_WORKSPACE_MAX_ENTRIES: int = Field(default=100, gt=0)
+    GROUP_CONTEXT_ANNOUNCEMENT_MAX_CHARS: int = Field(default=8000, gt=0)
+    GROUP_CONTEXT_MEMORY_MAX_CHARS: int = Field(default=8000, gt=0)
+    GROUP_CONTEXT_WORKSPACE_MAX_ENTRIES: int = Field(default=40, gt=0)
+    GROUP_CONTEXT_PLAN_PROMPT_MAX_CHARS: int = Field(default=2000, gt=0)
+    # None = no truncation for soul.md when assembling model context.
+    AGENT_RUNTIME_SOUL_MAX_CHARS: int | None = Field(default=None, gt=0)
+    AGENT_RUNTIME_INPUT_OPTIMIZE_ENABLED: bool = True
+    AGENT_RUNTIME_USE_COMPACT_GROUP_INSTRUCTION: bool = True
+    AGENT_RUNTIME_PENDING_MESSAGE_MAX_ITEMS: int = Field(default=10, gt=0)
+    AGENT_RUNTIME_PENDING_MESSAGE_MAX_CHARS: int = Field(default=500, gt=0)
     AGENT_RUNTIME_CHECKPOINT_RETENTION_DAYS: int = Field(default=30, gt=0)
     AGENT_RUNTIME_EVENT_PAYLOAD_MAX_BYTES: int = Field(default=16384, gt=0)
     AGENT_RUNTIME_TOOL_RESULT_INLINE_MAX_BYTES: int = Field(default=8192, gt=0)
@@ -202,6 +209,7 @@ class Settings(BaseSettings):
         "AGENT_RUNTIME_RUN_COMPACT_MESSAGE_THRESHOLD",
         "AGENT_RUNTIME_RUN_COMPACT_TOOL_RESULT_BYTES",
         "AGENT_RUNTIME_VERIFY_REPAIR_COMPACT_ROUNDS",
+        "AGENT_RUNTIME_SOUL_MAX_CHARS",
         mode="before",
     )
     @classmethod

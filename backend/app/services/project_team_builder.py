@@ -238,7 +238,7 @@ def build_team_wakeup_message(team_plan: dict) -> str:
         f"@{leader['name']}，你是「{str(team_plan.get('project_name') or '本项目')}」的项目总负责人。\n\n"
         f"项目需求：\n{str(team_plan.get('requirements') or '').strip()}\n\n"
         "请现在启动团队：\n"
-        "1. 基于项目目标拆分工作包、优先级、验收标准和时间节奏；\n"
+        "1. 基于项目目标拆分工作包、优先级、验收标准和里程碑节点；\n"
         "2. 在群内 @ 以下成员逐项分派任务，并协调依赖与风险：\n"
         f"{teammate_lines}\n"
         "3. 需要我决策时先向我汇报；全部完成后，汇总交付物、关键数据、风险和下一步建议，向我提交完成报告。"

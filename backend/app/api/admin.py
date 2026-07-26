@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -154,6 +155,38 @@ async def create_company(
     tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
     db.add(tenant)
     await db.flush()
+
+    try:
+        from app.services.hr_review_board_seeder import ensure_hr_review_board
+
+        await ensure_hr_review_board(
+            db,
+            tenant_id=tenant.id,
+            creator_id=current_user.id,
+            model_id=tenant.default_model_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Admin] HR review board seed failed for tenant {}: {}",
+            tenant.id,
+            exc,
+        )
+
+    try:
+        from app.services.governance_seeder import seed_governance_role_pool_for_tenant
+
+        await seed_governance_role_pool_for_tenant(
+            db,
+            tenant_id=tenant.id,
+            creator_id=current_user.id,
+            model_id=tenant.default_model_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Admin] Governance role pool seed failed for tenant {}: {}",
+            tenant.id,
+            exc,
+        )
 
     # Generate admin invitation code (single-use)
     code_str = secrets.token_urlsafe(12)[:16].upper()
