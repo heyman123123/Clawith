@@ -5,20 +5,26 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from app.models.agent import Agent
 from app.models.chat_session import ChatSession
+from app.models.group import Group
 from app.models.hr_review import HrReviewSession
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import group_chat_service
-from app.services.hr_review_board_seeder import ensure_hr_review_board
-from app.services.participant_identity import get_or_create_user_participant
+from app.services.hr_review_board_seeder import (
+    HR_REVIEW_BOARD_GROUP_NAME,
+    HR_REVIEW_BOARD_GROUP_TYPE,
+    ensure_hr_review_board,
+)
+from app.services.participant_identity import get_or_create_agent_participant, get_or_create_user_participant
 from app.services.project_team_builder import (
     HRPlanningError,
-    build_team_wakeup_message,
     validate_team_plan,
 )
 
@@ -28,6 +34,162 @@ if TYPE_CHECKING:
 
 class HrReviewError(RuntimeError):
     pass
+
+
+_HR_REVIEW_SESSION_MARKER = re.compile(r"<!--hr_review_session:([0-9a-f-]+)-->", re.IGNORECASE)
+_FENCED_JSON_BLOCK = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+
+
+def is_hr_review_board_group(group: Group) -> bool:
+    return _is_hr_review_board_group(group)
+
+
+def extract_hr_proposals_from_text(text: str) -> dict | None:
+    """Parse HR Secretary proposal JSON from group message or terminal Run output."""
+    if not text or not text.strip():
+        return None
+    marker_match = _HR_REVIEW_SESSION_MARKER.search(text)
+    hr_session_id = marker_match.group(1) if marker_match else None
+    json_match = _FENCED_JSON_BLOCK.search(text)
+    json_text = json_match.group(1).strip() if json_match else text.strip()
+    start, end = json_text.find("{"), json_text.rfind("}")
+    if start < 0 or end < start:
+        return None
+    try:
+        payload = json.loads(json_text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("hr_review_session_id"):
+        hr_session_id = str(payload["hr_review_session_id"]).strip() or hr_session_id
+    proposals = payload.get("proposals")
+    if not isinstance(proposals, list) or not proposals:
+        return None
+    return {
+        "hr_session_id": hr_session_id,
+        "proposals": proposals,
+    }
+
+
+def _merge_context_payload(existing: dict | None, incoming: dict | None) -> dict:
+    merged = dict(existing or {})
+    for key in ("name", "requirements"):
+        incoming_value = str((incoming or {}).get(key) or "").strip()
+        if incoming_value and not str(merged.get(key) or "").strip():
+            merged[key] = incoming_value
+    return merged
+
+
+async def get_hr_session_for_tenant(
+    db: AsyncSession,
+    *,
+    hr_session_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> HrReviewSession | None:
+    return await db.scalar(
+        select(HrReviewSession)
+        .join(Group, Group.id == HrReviewSession.group_id)
+        .where(
+            HrReviewSession.id == hr_session_id,
+            Group.tenant_id == tenant_id,
+            Group.deleted_at.is_(None),
+        )
+    )
+
+
+async def get_hr_session_by_chat_for_tenant(
+    db: AsyncSession,
+    *,
+    chat_session_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> HrReviewSession | None:
+    return await db.scalar(
+        select(HrReviewSession)
+        .join(Group, Group.id == HrReviewSession.group_id)
+        .where(
+            HrReviewSession.session_id == chat_session_id,
+            Group.tenant_id == tenant_id,
+            Group.deleted_at.is_(None),
+        )
+        .order_by(HrReviewSession.created_at.desc())
+        .limit(1)
+    )
+
+
+async def sync_hr_context_from_user_message(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    chat_session_id: uuid.UUID,
+    content: str,
+) -> None:
+    """Fill empty team_building context from the user's first in-session message."""
+    hr_session = await get_hr_session_by_chat_for_tenant(
+        db,
+        chat_session_id=chat_session_id,
+        tenant_id=tenant_id,
+    )
+    if (
+        hr_session is None
+        or hr_session.session_type != "team_building"
+        or hr_session.status != "open"
+    ):
+        return
+    message_text = content.strip()
+    if not message_text:
+        return
+    context = dict(hr_session.context_payload or {})
+    if not str(context.get("requirements") or "").strip():
+        context["requirements"] = message_text
+    if not str(context.get("name") or "").strip():
+        chat_session = await db.get(ChatSession, chat_session_id)
+        title = (chat_session.title or "").strip() if chat_session is not None else ""
+        if title:
+            context["name"] = title
+    hr_session.context_payload = context
+    await db.flush()
+
+
+async def process_hr_group_agent_output(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    chat_session_id: uuid.UUID,
+    text: str,
+) -> HrReviewSession | None:
+    """Persist validated proposals when HR agents emit proposal JSON in a group session."""
+    parsed = extract_hr_proposals_from_text(text)
+    if parsed is None:
+        return None
+
+    hr_session: HrReviewSession | None = None
+    raw_session_id = parsed.get("hr_session_id")
+    if raw_session_id:
+        try:
+            hr_session = await get_hr_session_for_tenant(
+                db,
+                hr_session_id=uuid.UUID(str(raw_session_id)),
+                tenant_id=tenant_id,
+            )
+        except ValueError:
+            hr_session = None
+    if hr_session is None:
+        hr_session = await get_hr_session_by_chat_for_tenant(
+            db,
+            chat_session_id=chat_session_id,
+            tenant_id=tenant_id,
+        )
+    if hr_session is None or hr_session.session_type != "team_building":
+        return None
+    try:
+        return await attach_proposals(
+            db,
+            hr_session_id=hr_session.id,
+            proposals=parsed["proposals"],
+        )
+    except (HrReviewError, ValueError):
+        return None
 
 
 def _json_object(text: str) -> dict:
@@ -57,10 +219,18 @@ def validate_team_building_proposals(proposals: list) -> list[dict]:
             raise ValueError("HR proposal is invalid")
         proposal_id = str(proposal.get("id") or f"proposal_{index + 1}").strip()
         label = str(proposal.get("label") or f"方案 {index + 1}").strip()
+        card_summary = str(proposal.get("card_summary") or "").strip()
         if not proposal_id or proposal_id in seen_ids:
             raise ValueError("HR proposal id is invalid or duplicated")
+        if not card_summary:
+            raise ValueError("HR proposal card_summary is required")
         roles = validate_team_plan({"roles": proposal.get("roles")})
-        normalized.append({"id": proposal_id, "label": label, "roles": roles})
+        normalized.append({
+            "id": proposal_id,
+            "label": label,
+            "card_summary": card_summary,
+            "roles": roles,
+        })
         seen_ids.add(proposal_id)
     return normalized
 
@@ -142,18 +312,89 @@ async def open_team_building_session(
     user: User,
     name: str,
     requirements: str,
+    chat_session_id: uuid.UUID | None = None,
 ) -> HrReviewSession:
+    context_payload = {
+        "name": name.strip(),
+        "requirements": requirements.strip(),
+    }
+    if chat_session_id is not None:
+        return await attach_team_building_session(
+            db,
+            tenant_id=tenant_id,
+            chat_session_id=chat_session_id,
+            context_payload=context_payload,
+        )
     return await _open_hr_session(
         db,
         tenant_id=tenant_id,
         user=user,
         session_type="team_building",
         title=f"组建团队：{name.strip()[:80]}",
-        context_payload={
-            "name": name.strip(),
-            "requirements": requirements.strip(),
-        },
+        context_payload=context_payload,
     )
+
+
+def _is_hr_review_board_group(group: Group) -> bool:
+    return group.group_type == HR_REVIEW_BOARD_GROUP_TYPE or group.name == HR_REVIEW_BOARD_GROUP_NAME
+
+
+async def attach_team_building_session(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    chat_session_id: uuid.UUID,
+    context_payload: dict | None = None,
+) -> HrReviewSession:
+    """Bind an open team_building HR review session to an existing group chat session."""
+    existing = await db.scalar(
+        select(HrReviewSession)
+        .join(Group, Group.id == HrReviewSession.group_id)
+        .where(
+            HrReviewSession.session_id == chat_session_id,
+            Group.tenant_id == tenant_id,
+            Group.deleted_at.is_(None),
+        )
+        .order_by(HrReviewSession.created_at.desc())
+        .limit(1)
+    )
+    if existing is not None:
+        if context_payload:
+            existing.context_payload = _merge_context_payload(existing.context_payload, context_payload)
+            await db.flush()
+        return existing
+
+    chat_session = await db.get(ChatSession, chat_session_id)
+    if chat_session is None or chat_session.deleted_at is not None:
+        raise HrReviewError("聊天 session 不存在")
+    if chat_session.tenant_id != tenant_id:
+        raise HrReviewError("聊天 session 不属于当前租户")
+    if chat_session.group_id is None:
+        raise HrReviewError("只能为群聊 session 绑定 HR 评审")
+
+    group = await db.get(Group, chat_session.group_id)
+    if group is None or group.deleted_at is not None:
+        raise HrReviewError("群聊不存在")
+    if not _is_hr_review_board_group(group):
+        raise HrReviewError("只能为 HR 评审群 session 绑定团队组建评审")
+
+    merged_context = _merge_context_payload({}, context_payload)
+    session_title = (chat_session.title or "").strip()
+    if session_title and not str(merged_context.get("name") or "").strip():
+        merged_context["name"] = session_title
+
+    hr_session = HrReviewSession(
+        id=uuid.uuid4(),
+        group_id=group.id,
+        session_id=chat_session.id,
+        session_type="team_building",
+        status="open",
+        proposals=[],
+        context_payload=merged_context,
+    )
+    db.add(hr_session)
+    await db.flush()
+    return hr_session
 
 
 async def open_governance_topup_session(
@@ -195,12 +436,14 @@ async def attach_proposals(
 
 
 def _team_building_system_prompt() -> str:
-    return """你是 HR Recruiter（招聘专员）。在与 HR Org Designer、HR Strategist 讨论后，为用户项目输出至少 3 套不同的团队组建方案。
+    return """你是 HR Recruiter（招聘专员）。在与 HR Org Designer、HR Strategist、HR Secretary 讨论后，为用户项目输出至少 3 套不同的团队组建方案。
+每套方案必须包含 card_summary（短摘要）与 roles；每角色必须含 duties、soul（完整 soul.md 正文）、suggested_tools、suggested_permissions。
 每套方案必须包含唯一项目群主（is_group_leader=true 且仅一位）。不要套用固定部门模板。
 只返回一个 JSON 对象，不要 Markdown，不要解释。格式：
 {"proposals":[
-  {"id":"proposal_1","label":"方案名称","roles":[
-    {"key":"english_snake_case","name":"岗位名称","role_description":"职责与交付物","personality":"工作风格","boundaries":"职责边界","is_group_leader":true}
+  {"id":"proposal_1","label":"方案名称","card_summary":"短摘要","roles":[
+    {"key":"english_snake_case","name":"岗位名称","duties":"职责与交付物","soul":"# 岗位\\n完整 soul.md 正文…","is_group_leader":true,
+     "suggested_tools":["group_write_workspace_file"],"suggested_permissions":{"scope_type":"company","access_level":"use"}}
   ]}
 ]}"""
 
@@ -212,14 +455,18 @@ async def generate_team_building_proposals(
     tenant_id: uuid.UUID,
     creator_id: uuid.UUID,
 ) -> HrReviewSession:
-    from app.services.llm.model_resolution import load_active_model
-    from app.services.llm.utils import LLMMessage, create_llm_client, get_model_api_key
-
-    hr_session = await db.get(HrReviewSession, hr_session_id)
+    hr_session = await get_hr_session_for_tenant(
+        db,
+        hr_session_id=hr_session_id,
+        tenant_id=tenant_id,
+    )
     if hr_session is None or hr_session.session_type != "team_building":
         raise HrReviewError("HR 团队组建 session 不存在")
     if hr_session.status != "open":
         raise HrReviewError("HR 团队组建 session 已关闭")
+
+    from app.services.llm.model_resolution import load_active_model
+    from app.services.llm.utils import LLMMessage, create_llm_client, get_model_api_key
 
     context = hr_session.context_payload or {}
     name = str(context.get("name") or "").strip()
@@ -272,14 +519,66 @@ async def generate_team_building_proposals(
     return await attach_proposals(db, hr_session_id=hr_session_id, proposals=raw_proposals)
 
 
+async def _send_hr_selection_receipt(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    hr_session: HrReviewSession,
+    project_name: str,
+    execution_group_id: uuid.UUID,
+    execution_session_id: uuid.UUID,
+) -> None:
+    """HR Secretary confirmation with execution group redirect hint."""
+    from app.services import group_message_service
+
+    secretary = await db.scalar(
+        select(Agent).where(
+            Agent.tenant_id == tenant_id,
+            Agent.name == "HR Secretary",
+            Agent.is_system.is_(True),
+            Agent.deleted_at.is_(None),
+        ).limit(1)
+    )
+    if secretary is None:
+        return
+    secretary_participant = await get_or_create_agent_participant(
+        db,
+        secretary.id,
+        display_name=secretary.name,
+        avatar_url=secretary.avatar_url,
+    )
+    await group_message_service.enqueue_group_message(
+        db,
+        tenant_id=tenant_id,
+        group_id=hr_session.group_id,
+        session_id=hr_session.session_id,
+        sender_participant_id=secretary_participant.id,
+        content=(
+            f"【方案已确认】项目「{project_name}」的执行群已创建。"
+            f"请进入执行群开始协作（group={execution_group_id}，session={execution_session_id}）。"
+        ),
+        mention_participant_ids=[],
+        message_id=uuid.uuid4(),
+        project_task_dispatch=False,
+    )
+
+
 async def select_proposal(
     db: AsyncSession,
     *,
     hr_session_id: uuid.UUID,
     proposal_id: str,
     user: User,
+    fallback_proposals: list | None = None,
 ) -> dict:
-    hr_session = await db.get(HrReviewSession, hr_session_id)
+    if user.tenant_id is None:
+        raise HrReviewError("用户缺少租户")
+
+    hr_session = await get_hr_session_for_tenant(
+        db,
+        hr_session_id=hr_session_id,
+        tenant_id=user.tenant_id,
+    )
     if hr_session is None:
         raise HrReviewError("HR 评审 session 不存在")
     if hr_session.status != "open":
@@ -296,6 +595,13 @@ async def select_proposal(
     if hr_session.session_type != "team_building":
         raise HrReviewError("不支持的 HR session 类型")
 
+    if not hr_session.proposals and fallback_proposals:
+        hr_session = await attach_proposals(
+            db,
+            hr_session_id=hr_session.id,
+            proposals=fallback_proposals,
+        )
+
     selected = next(
         (item for item in (hr_session.proposals or []) if str(item.get("id")) == proposal_id),
         None,
@@ -304,16 +610,50 @@ async def select_proposal(
         raise HrReviewError("所选方案不存在")
 
     context = hr_session.context_payload or {}
-    team_plan = {
-        "roles": selected["roles"],
-        "project_name": str(context.get("name") or ""),
-        "requirements": str(context.get("requirements") or ""),
-    }
-    team_plan["wake_up_message"] = build_team_wakeup_message(team_plan)
+    project_name = str(context.get("name") or "")
+    requirements = str(context.get("requirements") or "")
+
+    roles = validate_team_plan({"roles": selected["roles"]})
+    from app.services.project_provisioning import ProjectProvisioningError, provision_team_from_plan
+
+    try:
+        provisioned = await provision_team_from_plan(
+            db,
+            tenant_id=user.tenant_id,
+            creator_id=user.id,
+            creator_display_name=user.display_name,
+            creator_avatar_url=user.avatar_url,
+            project_name=project_name,
+            requirements=requirements,
+            roles=roles,
+        )
+    except ProjectProvisioningError as exc:
+        raise HrReviewError(str(exc)) from exc
+
+    await _send_hr_selection_receipt(
+        db,
+        tenant_id=user.tenant_id,
+        hr_session=hr_session,
+        project_name=project_name,
+        execution_group_id=uuid.UUID(provisioned["group_id"]),
+        execution_session_id=uuid.UUID(provisioned["session_id"]),
+    )
+
     hr_session.selected_proposal_id = proposal_id
-    hr_session.status = "user_selected"
+    hr_session.status = "completed"
+    hr_session.closed_at = datetime.now(UTC)
     await db.flush()
-    return team_plan
+
+    return {
+        "roles": provisioned["roles"],
+        "wake_up_message": provisioned["wake_up_message"],
+        "project_name": provisioned["project_name"],
+        "requirements": provisioned["requirements"],
+        "workflow_id": provisioned["workflow_id"],
+        "group_id": provisioned["group_id"],
+        "session_id": provisioned["session_id"],
+        "hr_review_session_id": str(hr_session.id),
+    }
 
 
 async def apply_governance_proposal(
@@ -328,13 +668,17 @@ async def apply_governance_proposal(
     from app.models.tenant import Tenant
     from app.services.governance_seeder import _ensure_governance_agent
 
-    hr_session = await db.get(HrReviewSession, hr_session_id)
+    if user.tenant_id is None:
+        raise HrReviewError("用户缺少租户")
+    hr_session = await get_hr_session_for_tenant(
+        db,
+        hr_session_id=hr_session_id,
+        tenant_id=user.tenant_id,
+    )
     if hr_session is None or hr_session.session_type != "governance_topup":
         raise HrReviewError("治理补全 session 不存在")
     if hr_session.status != "open":
         raise HrReviewError("该 HR 评审 session 已选择或完成")
-    if user.tenant_id is None:
-        raise HrReviewError("用户缺少租户")
 
     selected = next(
         (item for item in (hr_session.proposals or []) if str(item.get("id")) == proposal_id),

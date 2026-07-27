@@ -962,6 +962,231 @@
     background: var(--bg-hover);
 }
 
+.hr-proposal-card-stack {
+    display: grid;
+    gap: var(--space-3);
+}
+
+.hr-proposal-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+}
+
+.hr-proposal-card-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.hr-proposal-card-hint {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+}
+
+.hr-proposal-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-3);
+}
+
+.hr-proposal-card {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+}
+
+.hr-proposal-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.hr-proposal-card-tag,
+.hr-proposal-leader-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #dcfce7;
+    color: #166534;
+    font-size: 11px;
+    font-weight: 650;
+    white-space: nowrap;
+}
+
+.hr-proposal-card-summary,
+.hr-proposal-card-roles {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+}
+
+.hr-proposal-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.hr-proposal-card-detail-btn,
+.hr-proposal-card-confirm-btn {
+    font-size: var(--text-xs);
+}
+
+.hr-proposal-card-error {
+    margin: 0;
+    color: #dc2626;
+    font-size: var(--text-xs);
+}
+
+.hr-proposal-card-preamble {
+    margin-bottom: var(--space-3);
+    white-space: pre-wrap;
+}
+
+.hr-proposal-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.hr-proposal-modal {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    width: min(760px, 100%);
+    max-height: min(86vh, 900px);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    background: var(--bg-primary);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.hr-proposal-modal-header,
+.hr-proposal-modal-footer {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 20px;
+}
+
+.hr-proposal-modal-header {
+    border-bottom: 1px solid var(--border-default);
+}
+
+.hr-proposal-modal-header h3 {
+    margin: 0 0 6px;
+    font-size: var(--text-md);
+}
+
+.hr-proposal-modal-header p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+}
+
+.hr-proposal-modal-close {
+    flex: 0 0 auto;
+}
+
+.hr-proposal-modal-body {
+    overflow: auto;
+    padding: 16px 20px;
+    display: grid;
+    gap: var(--space-4);
+}
+
+.hr-proposal-role {
+    display: grid;
+    gap: 10px;
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.hr-proposal-role:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+}
+
+.hr-proposal-role-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.hr-proposal-role-block h4 {
+    margin: 0 0 6px;
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.hr-proposal-role-block p {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+    white-space: pre-wrap;
+}
+
+.hr-proposal-soul {
+    padding: 10px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    font-size: var(--text-xs);
+}
+
+.hr-proposal-tool-list {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--text-primary);
+    font-size: var(--text-xs);
+    line-height: 1.6;
+}
+
+.hr-proposal-permissions {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow: auto;
+}
+
+.hr-proposal-modal-footer {
+    border-top: 1px solid var(--border-default);
+    justify-content: flex-end;
+}
+
 .group-invite-btn {
     display: flex;
     align-items: center;

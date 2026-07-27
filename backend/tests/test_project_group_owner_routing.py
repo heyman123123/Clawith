@@ -1,4 +1,38 @@
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.agent import Agent
+from app.models.group import Group, GroupMember
+from app.models.participant import Participant
+from app.models.project import ShareholderGroup
+
+
+def _load_sync_shareholder_group_with_project_leader():
+    source = Path("app/services/project_provisioning.py").read_text()
+    start = source.index("async def sync_shareholder_group_with_project_leader(")
+    end = source.index("async def ensure_project_decision_group(", start)
+    namespace = {
+        "uuid": uuid,
+        "datetime": datetime,
+        "UTC": UTC,
+        "select": select,
+        "AsyncSession": AsyncSession,
+        "Agent": Agent,
+        "ShareholderGroup": ShareholderGroup,
+        "Group": Group,
+        "GroupMember": GroupMember,
+        "Participant": Participant,
+    }
+    exec(source[start:end], namespace)
+    return namespace["sync_shareholder_group_with_project_leader"]
 
 
 def test_project_group_messages_force_route_to_group_leader() -> None:
@@ -26,25 +60,25 @@ def test_standard_agent_initialization_materializes_workspace_roots() -> None:
 
 
 def test_project_creation_makes_teammates_mutual_contacts_and_kicks_off_leader() -> None:
-    source = Path("app/api/projects.py").read_text()
+    source = Path("app/services/project_provisioning.py").read_text()
     assert "AgentAgentRelationship" in source
     assert 'relation="project_teammate"' in source
-    assert "build_team_wakeup_message" in source
+    projects_source = Path("app/api/projects.py").read_text()
+    assert "provision_team_from_plan" in projects_source
     assert "group_message_service.enqueue_group_message" in source
 
 
 def test_project_group_is_exposed_only_after_all_members_are_ready() -> None:
-    source = Path("app/api/projects.py").read_text()
-    assert "async def _provision_project_agents" in source
+    source = Path("app/services/project_provisioning.py").read_text()
+    assert "async def provision_project_agents" in source
     assert "项目团队缺少可用主模型" in source
     assert "agent.status not in {\"running\", \"idle\"}" in source
-    create_start = source.index("async def create_project(")
-    create_end = source.index('@router.post("/{workflow_id}/decision-group"', create_start)
-    create_route = source[create_start:create_end]
-    assert create_route.index("await _provision_project_agents(") < create_route.index(
-        "await group_chat_service.create_group("
-    )
-    assert "_background_project_agent_setup" not in source
+    create_start = Path("app/api/projects.py").read_text().index("async def create_project(")
+    create_end = Path("app/api/projects.py").read_text().index('@router.post("/{workflow_id}/decision-group"', create_start)
+    create_route = Path("app/api/projects.py").read_text()[create_start:create_end]
+    assert "provision_team_from_plan" in create_route
+    assert create_route.index("provision_team_from_plan(") < create_route.index("return result")
+    assert "_background_project_agent_setup" not in Path("app/api/projects.py").read_text()
 
 
 def test_project_owner_can_repair_a_previously_creating_team() -> None:
@@ -78,10 +112,11 @@ def test_decision_ai_draft_is_generated_without_answering_or_notifying_group() -
 
 def test_project_governance_uses_a_separate_decision_group_for_review() -> None:
     project_source = Path("app/api/projects.py").read_text()
+    provisioning_source = Path("app/services/project_provisioning.py").read_text()
     task_source = Path("app/services/project_task_service.py").read_text()
 
     assert "decision_group_id" in project_source
-    assert "· 决策群" in project_source
+    assert "· 决策群" in provisioning_source
     assert "_decision_review_group_filter" in project_source
     assert "group_id=decision.group_id" in project_source
     assert "【项目群汇报 → 决策群】" in task_source
@@ -116,19 +151,13 @@ def test_shareholder_decisions_route_to_project_governance_before_execution() ->
     assert "project_task_dispatch=False" in api_source
 
 
-def test_shareholder_group_auto_includes_active_project_leaders() -> None:
+def test_shareholder_group_uses_governance_seeder_on_create() -> None:
     api_source = Path("app/api/projects.py").read_text()
     create_start = api_source.index("async def create_shareholder_group(")
     create_end = api_source.index("async def get_shareholder_board(", create_start)
     create_route = api_source[create_start:create_end]
 
-    # The shareholder group creator must look up every active project leader
-    # and seed the group with them, then promote the first leader to 群主.
-    assert "ProjectWorkflow.group_leader_agent_id == Agent.id" in create_route
-    assert 'ProjectWorkflow.status == "active"' in create_route
-    assert "member_participant_ids=leader_participant_ids" in create_route
-    assert "group.owner_agent_id = leader_rows[0].id" in create_route
-    assert "自动包含所有项目负责人 Agent" in create_route
+    assert "ensure_shareholder_group" in create_route
 
 
 def test_agent_completion_auto_routes_to_group_owner_in_leader_led_project_groups() -> None:
@@ -165,17 +194,15 @@ def test_group_runtime_instruction_requires_leader_mention_on_completion() -> No
 
 
 def test_project_activation_syncs_shareholder_group_with_leader() -> None:
-    api_source = Path("app/api/projects.py").read_text()
-    helper_start = api_source.index(
-        "async def _sync_shareholder_group_with_project_leader("
+    provisioning_source = Path("app/services/project_provisioning.py").read_text()
+    helper_start = provisioning_source.index(
+        "async def sync_shareholder_group_with_project_leader("
     )
-    helper_end = api_source.index("async def _ensure_project_decision_group(", helper_start)
-    helper_block = api_source[helper_start:helper_end]
+    helper_end = provisioning_source.index("async def ensure_project_decision_group(", helper_start)
+    helper_block = provisioning_source[helper_start:helper_end]
 
-    # The helper must guard on ShareholderGroup existence, look up the
-    # project leader's participant, backfill owner_agent_id when missing,
-    # and add / re-activate membership in a single transaction.
     assert "ShareholderGroup.tenant_id == tenant_id" in helper_block
+    assert "shareholder_group_entity.owner_agent_id is None" in helper_block
     assert (
         "shareholder_group_entity.owner_agent_id = leader_agent.id"
         in helper_block
@@ -184,8 +211,7 @@ def test_project_activation_syncs_shareholder_group_with_leader() -> None:
     assert "existing_membership.removed_at = None" in helper_block
     assert "role=\"member\"" in helper_block
 
-    # Both the create path and the repair path must invoke the helper so a
-    # newly activated project always shows up in the shareholder group.
+    api_source = Path("app/api/projects.py").read_text()
     create_start = api_source.index("async def create_project(")
     create_end = api_source.index(
         "@router.post(\"/{workflow_id}/decision-group\"", create_start
@@ -196,9 +222,69 @@ def test_project_activation_syncs_shareholder_group_with_leader() -> None:
         "@router.get(\"/groups/{group_id}/tasks\"", provision_start
     )
     provision_route = api_source[provision_start:provision_end]
-    assert (
-        "_sync_shareholder_group_with_project_leader(" in create_route
+    assert "provision_team_from_plan(" in create_route
+    assert "sync_shareholder_group_with_project_leader(" in provision_route
+
+
+@pytest.mark.asyncio
+async def test_sync_shareholder_group_preserves_board_secretary_owner() -> None:
+    """Active project sync must not replace an existing Board Secretary 群主."""
+    sync = _load_sync_shareholder_group_with_project_leader()
+
+    tenant_id = uuid.uuid4()
+    board_secretary_id = uuid.uuid4()
+    leader_agent_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    leader_participant_id = uuid.uuid4()
+
+    leader_agent = Agent(
+        id=leader_agent_id,
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Project Leader",
+        status="idle",
+        is_expired=False,
     )
-    assert (
-        "_sync_shareholder_group_with_project_leader(" in provision_route
+    group = SimpleNamespace(
+        id=group_id,
+        owner_agent_id=board_secretary_id,
+        deleted_at=None,
     )
+    shareholder_row = SimpleNamespace(group_id=group_id)
+    leader_participant = SimpleNamespace(id=leader_participant_id)
+
+    class _SyncDB:
+        def __init__(self) -> None:
+            self.added = []
+
+        async def scalar(self, _statement):
+            sql = str(_statement).lower()
+            if "shareholder_groups" in sql:
+                return shareholder_row
+            if "group_members" in sql:
+                return None
+            if "participants" in sql:
+                return leader_participant
+            return None
+
+        async def get(self, model, obj_id):
+            if model is Group and obj_id == group_id:
+                return group
+            return None
+
+        def add(self, value) -> None:
+            self.added.append(value)
+
+    db = _SyncDB()
+
+    await sync(
+        db,
+        tenant_id=tenant_id,
+        leader_agent=leader_agent,
+    )
+
+    assert group.owner_agent_id == board_secretary_id
+    memberships = [value for value in db.added if isinstance(value, GroupMember)]
+    assert len(memberships) == 1
+    assert memberships[0].participant_id == leader_participant_id
+    assert memberships[0].role == "member"

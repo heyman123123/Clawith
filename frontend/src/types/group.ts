@@ -5,6 +5,7 @@ export interface Group {
     tenant_id: string;
     name: string;
     description: string | null;
+    group_type: string | null;
     created_by_participant_id: string;
     owner_agent_id: string | null;
     created_at: string;

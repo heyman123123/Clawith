@@ -2318,7 +2318,26 @@
     "generatingDecisionDraft": "正在生成建议…",
     "sendToProjectLeader": "发送给群主",
     "decisionDraftFailed": "AI 建议生成失败，请重试。",
-    "decisionReplyFailed": "发送给群主失败，请重试。"
+    "decisionReplyFailed": "发送给群主失败，请重试。",
+    "shareholderBoard": "股东决策",
+    "notShareholderGroup": "当前群不是股东群。股东群在租户初始化时已创建，请从「需求与执行」入口进入。",
+    "shareholderBoardTitle": "公司治理决策台",
+    "shareholderBoardHint": "股东群为租户常驻群。先在群内讨论，需要人类拍板时 @董事会秘书；确认后再选择项目下发至对应决策群。",
+    "shareholderDecisionPlaceholder": "填写已在股东群确认、并经 @董事会秘书 协调的项目进展、资源管控或跨项目决策…",
+    "shareholderDispatchFailed": "股东决策下发失败，请重试。",
+    "selectProjectsToDispatch": "选择下发项目",
+    "projectsSelected": "个已选择",
+    "noRoutableProjects": "暂无已就绪的项目决策群。",
+    "dispatchingShareholderDecision": "正在下发…",
+    "confirmShareholderDispatch": "确认并下发至项目决策群",
+    "shareholderDispatchHistory": "最近下发",
+    "dispatchReceiptHint": "每项记录均可追溯到目标项目。",
+    "noShareholderDispatches": "暂未下发公司级决策。",
+    "dispatched": "已下发"
+  },
+  "projects": {
+    "enterShareholderGroup": "进入股东群",
+    "shareholderGroupProvisioning": "股东群正在补齐，请稍候或联系管理员"
   },
   "experience": {
     "title": "经验库",

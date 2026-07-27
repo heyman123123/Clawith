@@ -16,7 +16,7 @@ from app.models.participant import Participant
 from app.models.project import ProjectWorkflow
 from app.models.task import Task
 from app.services import group_message_service
-from app.services.decision_sync_content import build_decision_sync_content
+from app.services.decision_sync_content import build_decision_sync_content, decision_summary_ready_for_task_dispatch
 from app.services.project_decision_dag import (
     apply_cancelled_task_ids,
     collect_unblocked_tasks,
@@ -125,6 +125,13 @@ async def dispatch_decision_to_project_leader(
         return
 
     summary = record.decision_summary or {}
+    if not decision_summary_ready_for_task_dispatch(summary):
+        logger.info(
+            "[DecisionDispatcher] Skipping task mutation for non-dispatchable summary on record {}",
+            record_id,
+        )
+        return
+
     content = build_decision_sync_content(record_id=record.id, summary=summary)
     await group_message_service.enqueue_group_message(
         db,

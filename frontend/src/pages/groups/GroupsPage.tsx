@@ -16,6 +16,7 @@ import {
     IconTrash,
 } from '@tabler/icons-react';
 import { groupApi } from '../../services/groupApi';
+import { hrReviewApi } from '../../services/hrReviewApi';
 import {
     compareCursor,
     type GroupActivity,
@@ -42,6 +43,7 @@ type RenameTarget = { groupId: string; sessionId: string; current: string };
 
 const HISTORY_PAGE_SIZE = 30;
 const ACTIVE_RUN_TRANSITION_GRACE_MS = 5000;
+import { isHrReviewBoardGroup } from '../../utils/hrReviewBoard';
 
 const readFlag = (key: string, fallback: boolean) => {
     const stored = localStorage.getItem(key);
@@ -173,6 +175,13 @@ export default function GroupsPage() {
     const activeSession = sessions.find((session) => session.id === sessionId);
     const activeGroupId = activeGroup?.id;
     const activeSessionId = activeSession?.id;
+    const isHrReviewBoard = isHrReviewBoardGroup(activeGroup);
+
+    const { data: hrReviewSession } = useQuery({
+        queryKey: ['hr-review-session', activeSessionId],
+        queryFn: () => hrReviewApi.getSessionByChatSession(activeSessionId!),
+        enabled: Boolean(isHrReviewBoard && activeSessionId),
+    });
 
     const { data: activeRunStates = [], refetch: refetchActiveRuns } = useQuery({
         queryKey: ['group-active-runs', groupId, sessionId],
@@ -568,6 +577,10 @@ export default function GroupsPage() {
                 title.trim() ? { title: title.trim() } : {},
             );
             await queryClient.invalidateQueries({ queryKey: ['group-sessions', targetGroupId] });
+            const targetGroup = groups.find((group) => group.id === targetGroupId);
+            if (isHrReviewBoardGroup(targetGroup)) {
+                await queryClient.invalidateQueries({ queryKey: ['hr-review-session', session.id] });
+            }
             setExpandedGroups((current) => new Set(current).add(targetGroupId));
             navigate(`/groups/${targetGroupId}/${session.id}`);
         } catch (error: any) {
@@ -837,6 +850,7 @@ export default function GroupsPage() {
                             messages={messages}
                             members={members}
                             myParticipantId={me?.participant_id}
+                            hrReviewSessionId={hrReviewSession?.hr_review_session_id}
                             hasMore={hasMore}
                             loadingMore={loadingMore}
                             isPlanning={isPlanning}

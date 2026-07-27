@@ -386,11 +386,11 @@ export default function GroupSidePanel({
                 {tab === 'shareholder' && (
                     <div className="shareholder-board">
                         {shareholderBoard === null && !shareholderBoardError && <div className="group-member-hint">{t('common.loading', '加载中...')}</div>}
-                        {shareholderBoardError && <div className="project-dashboard-empty"><IconBuildingBank size={18} /><span>{t('groups.notShareholderGroup', '当前群不是股东群。可在项目流程中创建股东群。')}</span></div>}
+                        {shareholderBoardError && <div className="project-dashboard-empty"><IconBuildingBank size={18} /><span>{t('groups.notShareholderGroup')}</span></div>}
                         {shareholderBoard && <>
                             <section className="shareholder-board-hero">
                                 <IconBuildingBank size={20} />
-                                <div><strong>{t('groups.shareholderBoardTitle', '公司治理决策台')}</strong><p>{t('groups.shareholderBoardHint', '先在群内讨论确认，再选择项目下发至对应决策群主。')}</p></div>
+                                <div><strong>{t('groups.shareholderBoardTitle')}</strong><p>{t('groups.shareholderBoardHint')}</p></div>
                             </section>
                             <section className="shareholder-dispatch-form">
                                 <div className="project-dashboard-section-title"><span>{t('groups.selectProjectsToDispatch', '选择下发项目')}</span><small>{shareholderProjectIds.length} {t('groups.projectsSelected', '个已选择')}</small></div>
@@ -403,7 +403,7 @@ export default function GroupSidePanel({
                                     className="project-decision-input shareholder-decision-input"
                                     value={shareholderDecision}
                                     disabled={dispatchingShareholderDecision}
-                                    placeholder={t('groups.shareholderDecisionPlaceholder', '填写已在股东群确认的项目进展、资源管控或跨项目决策…')}
+                                    placeholder={t('groups.shareholderDecisionPlaceholder')}
                                     onChange={(event) => { setShareholderDecision(event.target.value); setShareholderDispatchError(''); }}
                                 />
                                 {shareholderDispatchError && <div className="project-decision-error">{shareholderDispatchError}</div>}

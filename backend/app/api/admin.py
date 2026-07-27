@@ -157,33 +157,18 @@ async def create_company(
     await db.flush()
 
     try:
-        from app.services.hr_review_board_seeder import ensure_hr_review_board
+        from app.services.governance_group_backfill import try_ensure_governance_groups_for_tenant
 
-        await ensure_hr_review_board(
+        await try_ensure_governance_groups_for_tenant(
             db,
             tenant_id=tenant.id,
             creator_id=current_user.id,
             model_id=tenant.default_model_id,
+            context="admin.create_company",
         )
     except Exception as exc:
         logger.warning(
-            "[Admin] HR review board seed failed for tenant {}: {}",
-            tenant.id,
-            exc,
-        )
-
-    try:
-        from app.services.governance_seeder import seed_governance_role_pool_for_tenant
-
-        await seed_governance_role_pool_for_tenant(
-            db,
-            tenant_id=tenant.id,
-            creator_id=current_user.id,
-            model_id=tenant.default_model_id,
-        )
-    except Exception as exc:
-        logger.warning(
-            "[Admin] Governance role pool seed failed for tenant {}: {}",
+            "[Admin] Governance groups seed failed for tenant {}: {}",
             tenant.id,
             exc,
         )
@@ -635,6 +620,29 @@ async def get_platform_settings(
         settings[key] = s.value.get("enabled", default) if s else default
 
     return PlatformSettingsOut(**settings)
+
+
+# ─── Governance group backfill ──────────────────────────
+
+
+class GovernanceBackfillResponse(BaseModel):
+    processed: int
+    skipped: int
+    failed: int
+    total: int
+
+
+@router.post("/backfill-governance-groups", response_model=GovernanceBackfillResponse)
+async def backfill_governance_groups(
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ensure HR board, governance pool, and shareholder group for all active tenants."""
+    from app.services.governance_group_backfill import backfill_governance_groups_for_all_tenants
+
+    summary = await backfill_governance_groups_for_all_tenants(db)
+    await db.commit()
+    return GovernanceBackfillResponse(**summary)
 
 
 @router.put("/platform-settings", response_model=PlatformSettingsOut)

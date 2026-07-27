@@ -2195,7 +2195,26 @@
     "generatingDecisionDraft": "Generating suggestion…",
     "sendToProjectLeader": "Send to group leader",
     "decisionDraftFailed": "Could not generate the AI suggestion. Please try again.",
-    "decisionReplyFailed": "Could not send the instruction to the group leader. Please try again."
+    "decisionReplyFailed": "Could not send the instruction to the group leader. Please try again.",
+    "shareholderBoard": "Shareholder decisions",
+    "notShareholderGroup": "This group is not the shareholder group. Each tenant gets a permanent shareholder group at init — open it from Requirements & Execution.",
+    "shareholderBoardTitle": "Corporate governance desk",
+    "shareholderBoardHint": "The shareholder group is always present. Discuss in the group; when a human decision is needed, @ Board Secretary, then dispatch to project decision groups.",
+    "shareholderDecisionPlaceholder": "Enter project progress, resource controls, or cross-project decisions confirmed in the shareholder group via @ Board Secretary…",
+    "shareholderDispatchFailed": "Could not dispatch the shareholder decision. Please try again.",
+    "selectProjectsToDispatch": "Select projects to dispatch",
+    "projectsSelected": "selected",
+    "noRoutableProjects": "No project decision groups are ready yet.",
+    "dispatchingShareholderDecision": "Dispatching…",
+    "confirmShareholderDispatch": "Confirm and dispatch to project decision groups",
+    "shareholderDispatchHistory": "Recent dispatches",
+    "dispatchReceiptHint": "Each record links back to its target project.",
+    "noShareholderDispatches": "No company-level decisions dispatched yet.",
+    "dispatched": "Dispatched"
+  },
+  "projects": {
+    "enterShareholderGroup": "Open shareholder group",
+    "shareholderGroupProvisioning": "Shareholder group is being provisioned — retry shortly or contact an admin"
   },
   "experience": {
     "title": "Experience",

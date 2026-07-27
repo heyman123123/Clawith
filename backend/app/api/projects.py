@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.database import get_db
-from app.models.agent import Agent, AgentPermission
+from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.group import Group, GroupMember
 from app.models.org import AgentAgentRelationship
@@ -32,12 +32,10 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import group_chat_service
 from app.services import group_message_service
-from app.services.group_chat_service import GroupChatServiceError
 from app.services.group_message_service import GroupMessageServiceError
 from app.services.participant_identity import get_or_create_user_participant
 from app.services.project_team_builder import (
     HRPlanningError,
-    build_team_wakeup_message,
     validate_team_plan,
 )
 from app.services.hr_review_session_service import (
@@ -46,12 +44,17 @@ from app.services.hr_review_session_service import (
     hr_session_to_dict,
     open_team_building_session,
 )
-from app.services.access_relationships import ensure_access_granted_platform_relationships
-from app.services.agent_manager import agent_manager
 from app.services.decision_record_service import finalize_decision_record
-from app.services.governance_membership import select_decision_group_members
-from app.services.llm.model_resolution import load_active_model
 from app.services.llm.utils import LLMMessage, create_llm_client, get_model_api_key
+from app.services.project_provisioning import (
+    ProjectProvisioningError,
+    ensure_project_decision_group as provision_project_decision_group,
+    ensure_team_directory_contacts,
+    project_default_model_id,
+    provision_project_agents,
+    provision_team_from_plan,
+    sync_shareholder_group_with_project_leader,
+)
 
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -286,257 +289,6 @@ async def _project_out(db: AsyncSession, workflow: ProjectWorkflow) -> ProjectOu
     )
 
 
-class ProjectProvisioningError(RuntimeError):
-    """A project team was not ready to receive work."""
-
-
-async def _project_default_model_id(
-    db: AsyncSession,
-    *,
-    tenant: Tenant | None,
-    tenant_id: uuid.UUID,
-) -> uuid.UUID | None:
-    """Return the tenant default only when it is usable by project Agents."""
-    configured_model_id = tenant.default_model_id if tenant is not None else None
-    model = await load_active_model(
-        db,
-        model_id=configured_model_id,
-        tenant_id=tenant_id,
-    )
-    return model.id if model is not None else None
-
-
-async def _provision_project_agents(
-    db: AsyncSession,
-    *,
-    agents: list[tuple[dict, Agent, Participant]],
-    creator_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-    default_model_id: uuid.UUID | None,
-) -> None:
-    """Make every member executable before exposing the project group.
-
-    Project groups are an all-or-nothing collaboration surface: publishing a
-    group while one member is still ``creating`` makes the roster look valid
-    but makes A2A dispatch fail.  This intentionally performs the same file
-    and runtime bootstrap as custom Agent creation synchronously.
-    """
-    for role, agent, _ in agents:
-        active_model = await load_active_model(
-            db,
-            model_id=agent.primary_model_id,
-            tenant_id=tenant_id,
-        )
-        if active_model is None:
-            if default_model_id is None:
-                raise ProjectProvisioningError(
-                    "项目团队缺少可用主模型。请先在企业模型池启用并设置默认模型，再创建或修复项目。"
-                )
-            agent.primary_model_id = default_model_id
-
-        await ensure_access_granted_platform_relationships(
-            db,
-            agent,
-            created_by_user_id=creator_id,
-        )
-        if agent.status not in {"running", "idle"}:
-            await agent_manager.initialize_agent_files(
-                db,
-                agent,
-                personality=role["personality"],
-                boundaries=role["boundaries"],
-            )
-            # Native project members execute through the platform's durable
-            # Runtime; an optional OpenClaw sidecar is not a readiness
-            # prerequisite.  Requiring an image pull here made a transient
-            # Docker registry failure leave every team member in ``creating``.
-            if agent.agent_type == "native":
-                agent.status = "idle"
-                agent.last_active_at = datetime.now(UTC)
-            else:
-                await agent_manager.start_container(db, agent)
-        if agent.status not in {"running", "idle"}:
-            raise ProjectProvisioningError(
-                f"成员“{agent.name}”未能完成初始化（状态：{agent.status}）。"
-            )
-    await db.flush()
-
-
-async def _ensure_team_directory_contacts(
-    db: AsyncSession,
-    *,
-    agents: list[tuple[dict, Agent, Participant]],
-    created_by_user_id: uuid.UUID,
-) -> None:
-    """Make every project teammate a mutual, contactable Directory entry."""
-    agent_ids = [agent.id for _, agent, _ in agents]
-    existing_result = await db.execute(
-        select(AgentAgentRelationship.agent_id, AgentAgentRelationship.target_agent_id).where(
-            AgentAgentRelationship.agent_id.in_(agent_ids),
-            AgentAgentRelationship.target_agent_id.in_(agent_ids),
-        )
-    )
-    existing = set(existing_result.all())
-    for _, source, _ in agents:
-        for _, target, _ in agents:
-            if source.id == target.id or (source.id, target.id) in existing:
-                continue
-            db.add(
-                AgentAgentRelationship(
-                    id=uuid.uuid4(),
-                    agent_id=source.id,
-                    target_agent_id=target.id,
-                    relation="project_teammate",
-                    description="Auto-added because both Agents belong to the same project group.",
-                    created_by_user_id=created_by_user_id,
-                    updated_by_user_id=created_by_user_id,
-                )
-            )
-    await db.flush()
-
-
-async def _sync_shareholder_group_with_project_leader(
-    db: AsyncSession,
-    *,
-    tenant_id: uuid.UUID,
-    leader_agent: Agent,
-) -> None:
-    """Add the project leader to the tenant's shareholder group, backfilling the
-    群主 when none has been designated yet.
-
-    The shareholder group is opt-in (it is only created when a human explicitly
-    calls POST /projects/shareholder-group), so this helper is a no-op when the
-    group does not exist. Active project creation is the authoritative source
-    of truth for "who is a project leader"; keeping the membership in sync here
-    means human shareholders always see every project leader and the first
-    active leader gets promoted to 群主, even when the shareholder group was
-    created before any project.
-    """
-    shareholder_group = await db.scalar(
-        select(ShareholderGroup).where(ShareholderGroup.tenant_id == tenant_id)
-    )
-    if shareholder_group is None:
-        return
-    shareholder_group_entity = await db.get(Group, shareholder_group.group_id)
-    if (
-        shareholder_group_entity is None
-        or shareholder_group_entity.deleted_at is not None
-    ):
-        return
-    leader_participant = await db.scalar(
-        select(Participant).where(
-            Participant.type == "agent",
-            Participant.ref_id == leader_agent.id,
-        )
-    )
-    if leader_participant is None:
-        return
-    # Backfill the 群主 when none has been designated yet. This covers the
-    # case where the shareholder group was created before any active project
-    # existed and therefore had no leader to seed.
-    if shareholder_group_entity.owner_agent_id is None:
-        shareholder_group_entity.owner_agent_id = leader_agent.id
-    # Refresh membership. Re-activate a previously removed membership row
-    # when the same leader comes back, and create one when the leader has
-    # never been a member.
-    existing_membership = await db.scalar(
-        select(GroupMember).where(
-            GroupMember.group_id == shareholder_group_entity.id,
-            GroupMember.participant_id == leader_participant.id,
-        )
-    )
-    if existing_membership is not None:
-        if existing_membership.removed_at is not None:
-            existing_membership.removed_at = None
-            existing_membership.joined_at = datetime.now(UTC)
-        return
-    db.add(
-        GroupMember(
-            id=uuid.uuid4(),
-            group_id=shareholder_group_entity.id,
-            participant_id=leader_participant.id,
-            role="member",
-            joined_at=datetime.now(UTC),
-            removed_at=None,
-            session_read_state={},
-        )
-    )
-
-async def _ensure_project_decision_group(
-    db: AsyncSession,
-    *,
-    workflow: ProjectWorkflow,
-    human_participant: Participant,
-    agents: list[tuple[dict, Agent, Participant]],
-) -> None:
-    """Create the project governance group once, without duplicating members.
-
-    The execution group remains where Agents do the work.  The decision group
-    is the single user-facing review surface: all project members can provide
-    evidence there, while the project leader owns confirmed handoffs back to
-    the execution group.
-    """
-    if workflow.decision_group_id is not None:
-        return
-    _, leader_agent, leader_participant = next(
-        item for item in agents if item[0]["is_group_leader"]
-    )
-    governance_members = await select_decision_group_members(
-        db,
-        tenant_id=workflow.tenant_id,
-        leader_participant=leader_participant,
-    )
-    try:
-        decision_group = await group_chat_service.create_group(
-            db,
-            tenant_id=workflow.tenant_id,
-            creator_participant_id=human_participant.id,
-            name=f"{workflow.name} · 决策群",
-            description=(
-                "项目治理与方案评审群。项目群在此汇报进展、成效与卡点；"
-                "决策群讨论确认后，由项目负责人下发给项目群执行，并向用户汇报。"
-            ),
-            member_participant_ids=[participant.id for participant in governance_members],
-        )
-    except GroupChatServiceError as exc:
-        raise HTTPException(status_code=422, detail=f"决策群创建失败：{exc}") from exc
-    decision_group.owner_agent_id = leader_agent.id
-    owner_membership = await db.scalar(
-        select(GroupMember).where(
-            GroupMember.group_id == decision_group.id,
-            GroupMember.participant_id == leader_participant.id,
-            GroupMember.removed_at.is_(None),
-        )
-    )
-    if owner_membership is None:
-        raise HTTPException(status_code=500, detail="Decision group leader membership was not created")
-    owner_membership.role = "owner"
-    review_session = await group_chat_service.create_group_session(
-        db,
-        tenant_id=workflow.tenant_id,
-        group_id=decision_group.id,
-        actor_participant_id=human_participant.id,
-        title="方案评审",
-    )
-    workflow.decision_group_id = decision_group.id
-    await group_message_service.enqueue_group_message(
-        db,
-        tenant_id=workflow.tenant_id,
-        group_id=decision_group.id,
-        session_id=review_session.id,
-        sender_participant_id=human_participant.id,
-        content=(
-            "【决策群已启动】项目群的阶段进展、交付结果和卡点会汇报到这里。"
-            "请先在本群审议方案与风险；需要我确认时，在评审室汇总待决项。"
-            "确认后由项目总负责人向项目群下发执行指令，并在本群回报结果。"
-        ),
-        mention_participant_ids=[leader_participant.id],
-        message_id=uuid.uuid4(),
-        project_task_dispatch=False,
-    )
-    await db.flush()
-
-
 @router.post("/team-plans", response_model=HrTeamPlanSessionOut)
 async def create_team_plan(
     body: ProjectPlanIn,
@@ -589,158 +341,24 @@ async def create_project(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    tenant = await db.get(Tenant, tenant_id)
-    default_model_id = await _project_default_model_id(
-        db,
-        tenant=tenant,
-        tenant_id=tenant_id,
-    )
-    if default_model_id is None:
-        raise HTTPException(
-            status_code=422,
-            detail="项目团队无法创建：请先在企业模型池启用并设置一个默认模型。",
-        )
-    human_participant = await get_or_create_user_participant(
-        db,
-        current_user.id,
-        current_user.display_name,
-        current_user.avatar_url,
-    )
-    now = datetime.now(UTC)
-    workflow = ProjectWorkflow(
-        id=uuid.uuid4(),
-        tenant_id=tenant_id,
-        creator_id=current_user.id,
-        name=body.name.strip(),
-        template_key="hr_generated",
-        requirements=body.requirements.strip(),
-        status="provisioning",
-        team_plan={**body.team_plan, "roles": roles},
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(workflow)
-    agents: list[tuple[dict, Agent, Participant]] = []
-    for role in roles:
-        agent = Agent(
-            id=uuid.uuid4(),
-            name=role["name"],
-            role_description=role["role_description"],
-            bio=f"{body.name.strip()} 项目团队成员：{role['role_description']}",
-            creator_id=current_user.id,
-            tenant_id=tenant_id,
-            agent_type="native",
-            status="creating",
-            primary_model_id=default_model_id,
-            access_mode="company",
-            company_access_level="use",
-            max_llm_calls_per_day=(tenant.default_max_llm_calls_per_day or 1000) if tenant else 1000,
-            max_triggers=(tenant.default_max_triggers or 20) if tenant else 20,
-            min_poll_interval_min=(tenant.min_poll_interval_floor or 5) if tenant else 5,
-            webhook_rate_limit=(tenant.max_webhook_rate_ceiling or 5) if tenant else 5,
-            heartbeat_interval_minutes=max(240, tenant.min_heartbeat_interval_minutes or 0) if tenant else 240,
-        )
-        participant = Participant(
-            id=uuid.uuid4(), type="agent", ref_id=agent.id, display_name=agent.name, avatar_url=None
-        )
-        db.add_all((agent, participant, AgentPermission(agent_id=agent.id, scope_type="company", access_level="use")))
-        db.add(
-            ProjectWorkflowMember(
-                id=uuid.uuid4(), workflow_id=workflow.id, agent_id=agent.id,
-                role_key=role["key"], role_title=role["name"], is_group_leader=role["is_group_leader"],
-            )
-        )
-        agents.append((role, agent, participant))
-    await db.flush()
-
-    # Do not expose the group or enqueue the wake-up message until every
-    # member has a workspace, a usable primary model and a ready runtime.
     try:
-        await _provision_project_agents(
+        provisioned = await provision_team_from_plan(
             db,
-            agents=agents,
-            creator_id=current_user.id,
             tenant_id=tenant_id,
-            default_model_id=default_model_id,
+            creator_id=current_user.id,
+            creator_display_name=current_user.display_name,
+            creator_avatar_url=current_user.avatar_url,
+            project_name=body.name,
+            requirements=body.requirements,
+            roles=roles,
         )
     except ProjectProvisioningError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    await _ensure_team_directory_contacts(
-        db,
-        agents=agents,
-        created_by_user_id=current_user.id,
-    )
 
-    _, leader_agent, leader_participant = next(
-        item for item in agents if item[0]["is_group_leader"]
-    )
-    try:
-        group = await group_chat_service.create_group(
-            db,
-            tenant_id=tenant_id,
-            creator_participant_id=human_participant.id,
-            name=f"{workflow.name} · 项目群",
-            description=f"由 {leader_agent.name} 负责的项目群。向群主说明需求，群主负责分派并汇报。",
-            member_participant_ids=[participant.id for _, _, participant in agents],
-        )
-    except GroupChatServiceError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    group.owner_agent_id = leader_agent.id
-    owner_membership = await db.scalar(
-        select(GroupMember).where(
-            GroupMember.group_id == group.id,
-            GroupMember.participant_id == leader_participant.id,
-            GroupMember.removed_at.is_(None),
-        )
-    )
-    if owner_membership is None:
-        raise HTTPException(status_code=500, detail="Group leader membership was not created")
-    owner_membership.role = "owner"
-    session = await group_chat_service.create_group_session(
-        db,
-        tenant_id=tenant_id,
-        group_id=group.id,
-        actor_participant_id=human_participant.id,
-        title="项目协作",
-    )
-    workflow.group_id = group.id
-    workflow.group_leader_agent_id = leader_agent.id
-    await _ensure_project_decision_group(
-        db,
-        workflow=workflow,
-        human_participant=human_participant,
-        agents=agents,
-    )
-    try:
-        await group_message_service.enqueue_group_message(
-            db,
-            tenant_id=tenant_id,
-            group_id=group.id,
-            session_id=session.id,
-            sender_participant_id=human_participant.id,
-            content=build_team_wakeup_message({
-                "project_name": workflow.name,
-                "requirements": workflow.requirements,
-                "roles": roles,
-            }),
-            mention_participant_ids=[leader_participant.id],
-            message_id=uuid.uuid4(),
-        )
-    except GroupMessageServiceError as exc:
-        raise HTTPException(status_code=422, detail=f"Project kickoff could not be created: {exc}") from exc
-    workflow.status = "active"
-    workflow.updated_at = datetime.now(UTC)
-    await db.flush()
-    await _sync_shareholder_group_with_project_leader(
-        db,
-        tenant_id=tenant_id,
-        leader_agent=leader_agent,
-    )
-
+    workflow = provisioned["workflow"]
+    session = provisioned["session"]
+    group = provisioned["group"]
     result = await _project_out(db, workflow)
-    # Make the session visible to consumers in the returned transaction, while
-    # retaining a deliberate local binding as a regression guard for creation order.
     assert session.group_id == group.id
     return result
 
@@ -783,7 +401,7 @@ async def ensure_project_decision_group(
     ]
     if not agents or not any(role["is_group_leader"] for role, _, _ in agents):
         raise HTTPException(status_code=422, detail="项目团队缺少可用的项目总负责人。")
-    await _ensure_project_decision_group(
+    await provision_project_decision_group(
         db,
         workflow=workflow,
         human_participant=human_participant,
@@ -860,75 +478,23 @@ async def create_shareholder_group(
     db: AsyncSession = Depends(get_db),
 ) -> ShareholderGroupOut:
     """Create one company-level shareholder group for cross-project governance."""
+    from app.services.shareholder_group_seeder import ensure_shareholder_group
+
     tenant_id = _tenant_id(current_user)
-    existing = await db.scalar(select(ShareholderGroup).where(ShareholderGroup.tenant_id == tenant_id))
-    if existing is not None:
-        group = await db.get(Group, existing.group_id)
-        if group is None:
-            raise HTTPException(status_code=409, detail="Shareholder group record is inconsistent")
-        return ShareholderGroupOut(group_id=group.id, name=group.name, created_at=existing.created_at)
-    participant = await get_or_create_user_participant(
-        db,
-        current_user.id,
-        current_user.display_name,
-        current_user.avatar_url,
-    )
-    leader_rows_result = await db.execute(
-        select(Agent)
-        .join(ProjectWorkflow, ProjectWorkflow.group_leader_agent_id == Agent.id)
-        .where(
-            ProjectWorkflow.tenant_id == tenant_id,
-            ProjectWorkflow.status == "active",
-            ProjectWorkflow.group_leader_agent_id.is_not(None),
-            Agent.deleted_at.is_(None),
-        )
-        .order_by(ProjectWorkflow.created_at.asc())
-    )
-    leader_rows = list(leader_rows_result.scalars().all())
-    seen_participant_ids: set[uuid.UUID] = {participant.id}
-    leader_participant_ids: list[uuid.UUID] = []
-    for leader_agent in leader_rows:
-        leader_participant = await db.scalar(
-            select(Participant).where(
-                Participant.type == "agent",
-                Participant.ref_id == leader_agent.id,
-            )
-        )
-        if leader_participant is None or leader_participant.id in seen_participant_ids:
-            continue
-        seen_participant_ids.add(leader_participant.id)
-        leader_participant_ids.append(leader_participant.id)
-    try:
-        group = await group_chat_service.create_group(
-            db,
-            tenant_id=tenant_id,
-            creator_participant_id=participant.id,
-            name="股东群",
-            description=(
-                "公司级项目进展、资源管控与跨项目决策群。自动包含所有项目负责人 Agent，"
-                "负责人在此接收股东决策并回报进展；确认后按项目下发至对应决策群。"
-            ),
-            member_participant_ids=leader_participant_ids,
-        )
-    except GroupChatServiceError as exc:
-        raise HTTPException(status_code=422, detail=f"股东群创建失败：{exc}") from exc
-    if leader_rows:
-        group.owner_agent_id = leader_rows[0].id
-    await group_chat_service.create_group_session(
+    tenant = await db.get(Tenant, tenant_id)
+    model_id = tenant.default_model_id if tenant is not None else None
+    group = await ensure_shareholder_group(
         db,
         tenant_id=tenant_id,
-        group_id=group.id,
-        actor_participant_id=participant.id,
-        title="公司治理",
-    )
-    shareholder_group = ShareholderGroup(
-        id=uuid.uuid4(),
-        tenant_id=tenant_id,
-        group_id=group.id,
         creator_id=current_user.id,
+        model_id=model_id,
     )
-    db.add(shareholder_group)
-    await db.flush()
+    await db.commit()
+    shareholder_group = await db.scalar(
+        select(ShareholderGroup).where(ShareholderGroup.tenant_id == tenant_id)
+    )
+    if shareholder_group is None:
+        raise HTTPException(status_code=409, detail="Shareholder group record is inconsistent")
     return ShareholderGroupOut(
         group_id=group.id,
         name=group.name,
@@ -1152,13 +718,13 @@ async def provision_project_team(
         agents.append((role, agent, participant))
 
     tenant = await db.get(Tenant, tenant_id)
-    default_model_id = await _project_default_model_id(
+    default_model_id = await project_default_model_id(
         db,
         tenant=tenant,
         tenant_id=tenant_id,
     )
     try:
-        await _provision_project_agents(
+        await provision_project_agents(
             db,
             agents=agents,
             creator_id=current_user.id,
@@ -1172,7 +738,7 @@ async def provision_project_team(
         await db.commit()
         raise HTTPException(status_code=422, detail=workflow.failure_reason) from exc
 
-    await _ensure_team_directory_contacts(
+    await ensure_team_directory_contacts(
         db,
         agents=agents,
         created_by_user_id=current_user.id,
@@ -1184,7 +750,7 @@ async def provision_project_team(
             current_user.display_name,
             current_user.avatar_url,
         )
-        await _ensure_project_decision_group(
+        await provision_project_decision_group(
             db,
             workflow=workflow,
             human_participant=human_participant,
@@ -1197,7 +763,7 @@ async def provision_project_team(
     if workflow.group_leader_agent_id is not None:
         leader_agent_for_sync = await db.get(Agent, workflow.group_leader_agent_id)
         if leader_agent_for_sync is not None:
-            await _sync_shareholder_group_with_project_leader(
+            await sync_shareholder_group_with_project_leader(
                 db,
                 tenant_id=tenant_id,
                 leader_agent=leader_agent_for_sync,

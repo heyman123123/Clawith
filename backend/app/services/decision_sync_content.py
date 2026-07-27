@@ -6,6 +6,15 @@ import uuid
 from typing import Any
 
 
+def decision_summary_ready_for_task_dispatch(summary: dict[str, Any]) -> bool:
+    """Only confirmed decision summaries may mutate execution tasks."""
+    if summary.get("escalation_needed"):
+        return False
+    if summary.get("awaiting_board_resolution"):
+        return False
+    return True
+
+
 def build_decision_sync_content(*, record_id: uuid.UUID, summary: dict[str, Any]) -> str:
     """Format the structured decision sync message per spec §4.7."""
     lines = [f"<!--decision_sync:{record_id}-->"]

@@ -5,6 +5,24 @@ export interface ProjectTeamRole {
     personality: string;
     boundaries: string;
     is_group_leader: boolean;
+    duties?: string;
+    soul?: string;
+    suggested_tools?: string[];
+    suggested_permissions?: Record<string, string>;
+}
+
+export interface HrProposalRole extends ProjectTeamRole {
+    duties: string;
+    soul: string;
+    suggested_tools: string[];
+    suggested_permissions?: Record<string, string>;
+}
+
+export interface HrTeamProposal {
+    id: string;
+    label: string;
+    card_summary: string;
+    roles: HrProposalRole[];
 }
 
 export interface TeamPlan {
@@ -35,6 +53,10 @@ export interface TeamPlanSelection {
     project_name: string;
     requirements: string;
     planner_name?: string;
+    workflow_id?: string;
+    group_id?: string;
+    session_id?: string;
+    hr_review_session_id?: string;
 }
 
 export interface ProjectWorkflowMember {

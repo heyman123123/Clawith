@@ -16,8 +16,14 @@ from app.config import Settings
 from app.services.agent_runtime.a2a_completion import A2ARuntimeCompletionHandler
 from app.services.agent_runtime.command_worker import CommandWorkResult, RuntimeRunRecord
 from app.services.agent_runtime.channel_delivery import ChannelDeliveryWorkResult
+from app.services.agent_runtime.governance_completion import (
+    GovernanceRuntimeCompletionHandler,
+)
 from app.services.agent_runtime.heartbeat_completion import (
     HeartbeatRuntimeCompletionHandler,
+)
+from app.services.agent_runtime.hr_completion import (
+    HrRuntimeCompletionHandler,
 )
 from app.services.agent_runtime.onboarding_completion import (
     OnboardingRuntimeCompletionHandler,
@@ -321,6 +327,8 @@ def test_component_builder_installs_current_agent_and_planning_graphs() -> None:
         TriggerRuntimeCompletionHandler,
         HeartbeatRuntimeCompletionHandler,
         OnboardingRuntimeCompletionHandler,
+        GovernanceRuntimeCompletionHandler,
+        HrRuntimeCompletionHandler,
         A2ARuntimeCompletionHandler,
         SchedulingLaneCompletionHandler,
     ]

@@ -21,7 +21,7 @@ from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
 from app.models.audit import AuditLog, ChatMessage
-from app.models.group import GroupMember
+from app.models.group import Group, GroupMember
 from app.models.participant import Participant
 from app.models.user import User
 from app.services import group_chat_service
@@ -41,6 +41,8 @@ from app.services.group_chat_service import GroupChatServiceError
 from app.services.group_file_service import GroupFileServiceError
 from app.services.group_message_service import GroupMessageServiceError
 from app.services.group_realtime import publish_group_message_created
+from app.services.hr_review_board_seeder import HR_REVIEW_BOARD_GROUP_TYPE
+from app.services.hr_review_session_service import HrReviewError, attach_team_building_session
 from app.services.participant_identity import get_or_create_user_participant
 from app.services.storage import guess_content_type
 
@@ -66,6 +68,7 @@ class GroupOut(BaseModel):
     tenant_id: uuid.UUID
     name: str
     description: str | None = None
+    group_type: str | None = None
     created_by_participant_id: uuid.UUID
     owner_agent_id: uuid.UUID | None = None
     created_at: datetime
@@ -834,6 +837,20 @@ async def create_group_session(
         )
     except GroupChatServiceError as exc:
         raise _translate_domain_error(exc) from exc
+    group = await db.get(Group, group_id)
+    if group is not None and group.group_type == HR_REVIEW_BOARD_GROUP_TYPE:
+        context_payload: dict = {}
+        if body.title and body.title.strip():
+            context_payload = {"name": body.title.strip(), "requirements": ""}
+        try:
+            await attach_team_building_session(
+                db,
+                tenant_id=tenant_id,
+                chat_session_id=session.id,
+                context_payload=context_payload or None,
+            )
+        except HrReviewError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     _stage_audit(
         db,
         current_user=current_user,

@@ -236,6 +236,30 @@ async def register_init(
     # 5. Generate token outside transaction
     token = create_access_token(str(user.id), user.role)
 
+    # 5b. First-user default tenant: seed HR + shareholder + governance pool
+    if tenant_uuid is not None:
+        try:
+            from app.database import async_session
+            from app.models.tenant import Tenant as TenantModel
+            from app.services.governance_group_backfill import try_ensure_governance_groups_for_tenant
+
+            async with async_session() as seed_db:
+                tenant_row = await seed_db.get(TenantModel, tenant_uuid)
+                await try_ensure_governance_groups_for_tenant(
+                    seed_db,
+                    tenant_id=tenant_uuid,
+                    creator_id=user.id,
+                    model_id=tenant_row.default_model_id if tenant_row is not None else None,
+                    context="auth.register_init",
+                )
+                await seed_db.commit()
+        except Exception as exc:
+            logger.warning(
+                "[REGISTER_INIT] Governance groups seed failed for tenant {}: {}",
+                tenant_uuid,
+                exc,
+            )
+
     # 6. Send verification email if not verified (outside transaction)
     if not identity.email_verified:
         await _send_verification_email_task(user, background_tasks, settings)

@@ -9,14 +9,20 @@ def test_wakeup_message_uses_milestones_not_time_rhythm():
             {
                 "key": "leader",
                 "name": "Leader",
-                "role_description": "Own delivery",
+                "duties": "Own delivery",
+                "soul": "# Leader\nYou own delivery.",
                 "is_group_leader": True,
+                "suggested_tools": ["group_write_workspace_file"],
+                "suggested_permissions": {"scope_type": "company", "access_level": "use"},
             },
             {
                 "key": "dev",
                 "name": "Dev",
-                "role_description": "Build features",
+                "duties": "Build features",
+                "soul": "# Dev\nYou build features.",
                 "is_group_leader": False,
+                "suggested_tools": ["group_write_workspace_file"],
+                "suggested_permissions": {"scope_type": "company", "access_level": "use"},
             },
         ],
     })

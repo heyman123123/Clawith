@@ -1,8 +1,12 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { IconRobot } from '@tabler/icons-react';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import DecisionCard from '../../components/DecisionCard';
+import HrProposalCard from '../../components/HrProposalCard';
+import { hrReviewApi } from '../../services/hrReviewApi';
+import { hasHrProposalsContent, parseHrProposalsMessage } from '../../utils/hrProposalParser';
 import type { GroupMember, GroupMessage } from '../../types/group';
 
 interface MessageStreamProps {
@@ -10,6 +14,7 @@ interface MessageStreamProps {
     messages: GroupMessage[];
     members: GroupMember[];
     myParticipantId?: string;
+    hrReviewSessionId?: string;
     hasMore: boolean;
     loadingMore: boolean;
     isPlanning: boolean;
@@ -50,6 +55,7 @@ export default function MessageStream({
     messages,
     members,
     myParticipantId,
+    hrReviewSessionId,
     hasMore,
     loadingMore,
     isPlanning,
@@ -58,6 +64,7 @@ export default function MessageStream({
     onLatestMessageSeen,
 }: MessageStreamProps) {
     const { t } = useTranslation();
+    const navigate = useNavigate();
     const scrollRef = useRef<HTMLDivElement>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
     const pinnedToBottomRef = useRef(true);
@@ -79,6 +86,50 @@ export default function MessageStream({
     }, [latestMessageId, onLatestMessageSeen]);
 
     const memberByParticipant = new Map(members.map((member) => [member.participant_id, member]));
+
+    const confirmHrProposal = useCallback(async (proposalSessionId: string, proposalId: string) => {
+        const selection = await hrReviewApi.selectProposal(proposalSessionId, proposalId);
+        if (!selection.group_id || !selection.session_id) {
+            throw new Error(t('hrProposal.missingRedirect', '方案已确认，但未返回执行群信息。'));
+        }
+        navigate(`/groups/${selection.group_id}/${selection.session_id}`);
+    }, [navigate, t]);
+
+    const renderAgentContent = (message: GroupMessage) => {
+        if (message.content.includes('<!--decision_sync:')) {
+            return <DecisionCard content={message.content} />;
+        }
+
+        if (hasHrProposalsContent(message.content)) {
+            const parsed = parseHrProposalsMessage(message.content);
+            const resolvedSessionId = parsed?.hrReviewSessionId || hrReviewSessionId;
+            if (parsed && resolvedSessionId) {
+                return (
+                    <>
+                        {parsed.displayText && (
+                            <div className="group-message-text hr-proposal-card-preamble">
+                                {parsed.displayText}
+                            </div>
+                        )}
+                        <HrProposalCard
+                            proposals={parsed.proposals}
+                            disabled={parsed.proposals.length === 0}
+                            onConfirm={(proposalId) => confirmHrProposal(resolvedSessionId, proposalId)}
+                        />
+                    </>
+                );
+            }
+        }
+
+        return (
+            <MarkdownRenderer
+                content={message.content}
+                mentionNames={message.mentions
+                    .map((mention) => mention.display_name)
+                    .filter((name): name is string => Boolean(name))}
+            />
+        );
+    };
 
     const onScroll = () => {
         const node = scrollRef.current;
@@ -186,18 +237,11 @@ export default function MessageStream({
                                 </span>
                             </div>
                             <div className="group-message-bubble">
-                                {isAgent && message.content.includes('<!--decision_sync:')
-                                    ? <DecisionCard content={message.content} />
-                                    : isAgent
-                                        ? <MarkdownRenderer
-                                            content={message.content}
-                                            mentionNames={message.mentions
-                                                .map((mention) => mention.display_name)
-                                                .filter((name): name is string => Boolean(name))}
-                                        />
-                                        : <span className="group-message-text">
-                                            {renderContentWithMentions(message.content, message.mentions)}
-                                        </span>}
+                                {isAgent
+                                    ? renderAgentContent(message)
+                                    : <span className="group-message-text">
+                                        {renderContentWithMentions(message.content, message.mentions)}
+                                    </span>}
                             </div>
                         </div>
                     </div>

@@ -231,35 +231,19 @@ async def self_create_company(
         await registration_service.bind_org_member(current_user)
 
     try:
-        from app.services.hr_review_board_seeder import ensure_hr_review_board
+        from app.services.governance_group_backfill import try_ensure_governance_groups_for_tenant
 
         seed_user = new_user if "new_user" in locals() else current_user
-        await ensure_hr_review_board(
+        await try_ensure_governance_groups_for_tenant(
             db,
             tenant_id=tenant.id,
             creator_id=seed_user.id,
             model_id=tenant.default_model_id,
+            context="tenant.self_create",
         )
     except Exception as exc:
         logger.warning(
-            "[Tenants] HR review board seed failed for tenant {}: {}",
-            tenant.id,
-            exc,
-        )
-
-    try:
-        from app.services.governance_seeder import seed_governance_role_pool_for_tenant
-
-        seed_user = new_user if "new_user" in locals() else current_user
-        await seed_governance_role_pool_for_tenant(
-            db,
-            tenant_id=tenant.id,
-            creator_id=seed_user.id,
-            model_id=tenant.default_model_id,
-        )
-    except Exception as exc:
-        logger.warning(
-            "[Tenants] Governance role pool seed failed for tenant {}: {}",
+            "[Tenants] Governance groups seed failed for tenant {}: {}",
             tenant.id,
             exc,
         )
@@ -398,6 +382,17 @@ async def join_company(
     # Increment invitation code usage
     code_obj.used_count += 1
     await db.flush()
+
+    joined_user = new_user if access_token is not None else current_user
+    from app.services.governance_group_backfill import try_ensure_governance_groups_for_tenant
+
+    await try_ensure_governance_groups_for_tenant(
+        db,
+        tenant_id=tenant.id,
+        creator_id=joined_user.id,
+        model_id=tenant.default_model_id,
+        context="tenant.join",
+    )
 
     await db.commit()
 

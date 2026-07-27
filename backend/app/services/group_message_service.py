@@ -686,6 +686,27 @@ async def enqueue_group_message(
         mentions=mentions,
         clock=clock or datetime.now(UTC),
     )
+    from app.services.hr_review_board_seeder import HR_REVIEW_BOARD_GROUP_TYPE
+    from app.services.hr_review_session_service import (
+        process_hr_group_agent_output,
+        sync_hr_context_from_user_message,
+    )
+
+    if scope.group.group_type == HR_REVIEW_BOARD_GROUP_TYPE:
+        if scope.role == "user" and created:
+            await sync_hr_context_from_user_message(
+                db,
+                tenant_id=tenant_id,
+                chat_session_id=scope.session.id,
+                content=normalized_content,
+            )
+        elif scope.role == "assistant" and created:
+            await process_hr_group_agent_output(
+                db,
+                tenant_id=tenant_id,
+                chat_session_id=scope.session.id,
+                text=normalized_content,
+            )
     # HR-created project groups are Task-driven rather than a one-shot mention
     # chain. A human instruction becomes one durable project task DAG whose
     # entry task belongs to the group leader; its completion unlocks the next

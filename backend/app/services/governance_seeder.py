@@ -18,8 +18,12 @@ DECISION_ROLES: list[tuple[str, str, str, bool]] = [
     ("ceo", "decision", "CEO Agent", True),
     ("cto", "decision", "CTO Agent", True),
     ("coo", "decision", "COO Agent", True),
-    ("cfo", "decision", "CFO Agent", False),
+    ("cfo", "decision", "CFO Agent", True),
     ("cmo", "decision", "CMO Agent", False),
+]
+
+SECRETARY_ROLES: list[tuple[str, str, str, bool]] = [
+    ("board_secretary", "decision", "Board Secretary", True),
 ]
 
 REVIEW_ROLES: list[tuple[str, str, str, bool]] = [
@@ -147,7 +151,11 @@ async def seed_governance_role_pool_for_tenant(
     model_id: uuid.UUID | None,
 ) -> None:
     """Idempotently create governance agents and pool rows for one tenant."""
-    for role_key, role_type, role_title, is_default_enabled in [*DECISION_ROLES, *REVIEW_ROLES]:
+    for role_key, role_type, role_title, is_default_enabled in [
+        *DECISION_ROLES,
+        *SECRETARY_ROLES,
+        *REVIEW_ROLES,
+    ]:
         agent = await _ensure_governance_agent(
             db,
             tenant_id=tenant_id,

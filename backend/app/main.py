@@ -210,6 +210,23 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[startup] Default company seed or A2A enable failed: {e}")
 
         try:
+            from app.database import async_session as _gov_session
+            from app.services.governance_group_backfill import (
+                backfill_governance_groups_for_all_tenants,
+            )
+
+            async with _gov_session() as _gov_db:
+                summary = await backfill_governance_groups_for_all_tenants(_gov_db)
+                await _gov_db.commit()
+                logger.info(
+                    "[startup] Governance groups backfill: "
+                    "processed={processed} skipped={skipped} failed={failed} total={total}",
+                    **summary,
+                )
+        except Exception as e:
+            logger.warning(f"[startup] Governance groups backfill failed: {e}")
+
+        try:
             import shutil
             from pathlib import Path as _Path
             from app.config import get_settings as _gs

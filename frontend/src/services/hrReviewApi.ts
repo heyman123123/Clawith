@@ -20,8 +20,24 @@ function toHrTeamPlanSession(session: HrReviewSessionResponse): HrTeamPlanSessio
 }
 
 export const hrReviewApi = {
+    ensureBoard: () =>
+        fetchJson<{ group_id: string; name: string }>('/hr-review/board/ensure', {
+            method: 'POST',
+        }),
+
+    attachTeamBuilding: (chatSessionId: string) =>
+        fetchJson<HrReviewSessionResponse>(`/hr-review/sessions/attach-team-building`, {
+            method: 'POST',
+            body: JSON.stringify({ chat_session_id: chatSessionId }),
+        }).then(toHrTeamPlanSession),
+
     getSession: (id: string) =>
         fetchJson<HrReviewSessionResponse>(`/hr-review/sessions/${id}`).then(toHrTeamPlanSession),
+
+    getSessionByChatSession: (chatSessionId: string) =>
+        fetchJson<HrReviewSessionResponse>(`/hr-review/sessions/by-chat/${chatSessionId}`)
+            .then(toHrTeamPlanSession)
+            .catch(() => null),
 
     selectProposal: (sessionId: string, proposalId: string) =>
         fetchJson<TeamPlanSelection>(`/hr-review/sessions/${sessionId}/select`, {

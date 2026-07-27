@@ -89,6 +89,11 @@ async def finalize_decision_record(
     participants: list[Any],
 ) -> DecisionRecord:
     """Persist a decision record and dispatch it to the project leader."""
+    from app.services.board_escalation_service import is_escalation_payload
+
+    if is_escalation_payload(decision_summary):
+        raise ValueError("Escalation payloads must use open_board_escalation, not finalize_decision_record")
+
     if workflow.decision_group_id is None or workflow.group_id is None:
         raise ValueError("Project workflow is missing decision or execution group")
 
@@ -106,3 +111,55 @@ async def finalize_decision_record(
 
     await dispatch_decision_to_project_leader(db, record_id=record.id)
     return record
+
+
+async def process_decision_group_agent_output(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    workflow: ProjectWorkflow,
+    decision_session_id: uuid.UUID,
+    project_session_id: uuid.UUID,
+    text: str,
+    participants: list[Any],
+):
+    """Parse decision-group agent output for escalation or decision_summary."""
+    from app.services.board_escalation_service import (
+        extract_escalation_payload,
+        is_escalation_payload,
+        open_board_escalation,
+    )
+
+    escalation = extract_escalation_payload(text)
+    if escalation is not None:
+        return await open_board_escalation(
+            db,
+            tenant_id=tenant_id,
+            decision_group_id=workflow.decision_group_id,
+            decision_session_id=decision_session_id,
+            workflow_id=workflow.id,
+            payload=escalation,
+            creator_id=workflow.creator_id,
+        )
+
+    summary = extract_decision_summary(text)
+    if summary is None:
+        return None
+    if is_escalation_payload(summary):
+        return await open_board_escalation(
+            db,
+            tenant_id=tenant_id,
+            decision_group_id=workflow.decision_group_id,
+            decision_session_id=decision_session_id,
+            workflow_id=workflow.id,
+            payload=summary,
+            creator_id=workflow.creator_id,
+        )
+    return await finalize_decision_record(
+        db,
+        workflow=workflow,
+        decision_session_id=decision_session_id,
+        project_session_id=project_session_id,
+        decision_summary=summary,
+        participants=participants,
+    )

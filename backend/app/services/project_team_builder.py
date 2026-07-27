@@ -7,6 +7,7 @@ the database itself: the user reviews the returned plan before provisioning.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import UTC, datetime
@@ -14,6 +15,12 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models.agent import Agent
+    from app.models.participant import Participant
+    from app.models.tenant import Tenant
+
+logger = logging.getLogger(__name__)
 
 
 HR_RECRUITER_NAME = "HR 招聘 Agent"
@@ -179,6 +186,27 @@ def _role_key(value: str, index: int) -> str:
     return key[:56] or f"role_{index + 1}"
 
 
+def _validate_suggested_tools(tools: object) -> list[str]:
+    if not isinstance(tools, list):
+        raise ValueError("Team role suggested_tools is invalid")
+    normalized: list[str] = []
+    for tool in tools:
+        name = str(tool).strip()
+        if name:
+            normalized.append(name)
+    return normalized
+
+
+def _validate_suggested_permissions(perms: object) -> dict:
+    if not isinstance(perms, dict):
+        raise ValueError("Team role suggested_permissions is invalid")
+    scope_type = str(perms.get("scope_type") or "").strip()
+    access_level = str(perms.get("access_level") or "").strip()
+    if not scope_type or not access_level:
+        raise ValueError("Team role suggested_permissions must include scope_type and access_level")
+    return {"scope_type": scope_type, "access_level": access_level}
+
+
 def validate_team_plan(team_plan: dict) -> list[dict]:
     """Validate an HR proposal or its user-edited confirmation payload."""
     if not isinstance(team_plan, dict):
@@ -192,19 +220,25 @@ def validate_team_plan(team_plan: dict) -> list[dict]:
         if not isinstance(role, dict):
             raise ValueError("Team role is invalid")
         title = str(role.get("name", "")).strip()
-        description = str(role.get("role_description", "")).strip()
+        duties = str(role.get("duties") or "").strip()
+        soul = str(role.get("soul") or "").strip()
         key = _role_key(str(role.get("key") or title), index)
-        personality = str(role.get("personality") or f"专注于{title}，主动协作并及时向项目负责人同步。")[:2_000]
-        boundaries = str(role.get("boundaries") or "仅在职责范围内行动；遇到范围、风险或外部决策时先向项目负责人汇报。")[:2_000]
-        if not title or not description or len(title) > 100 or len(description) > 500 or key in keys:
+        if not title or len(title) > 100 or key in keys:
             raise ValueError("Team role fields are invalid")
+        if not duties:
+            raise ValueError("Team role duties is required")
+        if not soul:
+            raise ValueError("Team role soul is required")
+        suggested_tools = _validate_suggested_tools(role.get("suggested_tools"))
+        suggested_permissions = _validate_suggested_permissions(role.get("suggested_permissions"))
         keys.add(key)
         normalized.append({
             "key": key,
             "name": title,
-            "role_description": description,
-            "personality": personality,
-            "boundaries": boundaries,
+            "duties": duties,
+            "soul": soul,
+            "suggested_tools": suggested_tools,
+            "suggested_permissions": suggested_permissions,
             "is_group_leader": bool(role.get("is_group_leader")),
         })
     if sum(role["is_group_leader"] for role in normalized) != 1:
@@ -225,12 +259,108 @@ def parse_hr_team_plan(*, name: str, requirements: str, response_text: str) -> d
     return plan
 
 
+async def apply_suggested_tools(
+    db: "AsyncSession",
+    *,
+    agent_id: uuid.UUID,
+    tool_names: list[str],
+) -> None:
+    """Best-effort enable suggested tools; unknown names are logged and skipped."""
+    from sqlalchemy import select
+
+    from app.models.tool import AgentTool, Tool
+
+    for tool_name in tool_names:
+        tool = await db.scalar(
+            select(Tool).where(
+                Tool.name == tool_name,
+                Tool.enabled.is_(True),
+            )
+        )
+        if tool is None:
+            logger.warning(
+                "Suggested tool %r not found for agent %s; skipping",
+                tool_name,
+                agent_id,
+            )
+            continue
+        assignment = await db.scalar(
+            select(AgentTool).where(
+                AgentTool.agent_id == agent_id,
+                AgentTool.tool_id == tool.id,
+            )
+        )
+        if assignment is not None:
+            assignment.enabled = True
+        else:
+            db.add(AgentTool(agent_id=agent_id, tool_id=tool.id, enabled=True))
+    await db.flush()
+
+
+async def materialize_role_agent(
+    db: "AsyncSession",
+    *,
+    tenant_id: uuid.UUID,
+    creator_id: uuid.UUID,
+    project_name: str,
+    role: dict,
+    default_model_id: uuid.UUID,
+    tenant: "Tenant | None",
+) -> tuple[dict, "Agent", "Participant"]:
+    """Create one project role agent with permissions and suggested tools."""
+    from app.models.agent import Agent, AgentPermission
+    from app.models.participant import Participant
+
+    perms = role["suggested_permissions"]
+    agent = Agent(
+        id=uuid.uuid4(),
+        name=role["name"],
+        role_description=role["duties"],
+        bio=f"{project_name.strip()} 项目团队成员：{role['duties']}",
+        creator_id=creator_id,
+        tenant_id=tenant_id,
+        agent_type="native",
+        status="creating",
+        primary_model_id=default_model_id,
+        access_mode="company",
+        company_access_level=perms.get("access_level") or "use",
+        max_llm_calls_per_day=(tenant.default_max_llm_calls_per_day or 1000) if tenant else 1000,
+        max_triggers=(tenant.default_max_triggers or 20) if tenant else 20,
+        min_poll_interval_min=(tenant.min_poll_interval_floor or 5) if tenant else 5,
+        webhook_rate_limit=(tenant.max_webhook_rate_ceiling or 5) if tenant else 5,
+        heartbeat_interval_minutes=max(240, tenant.min_heartbeat_interval_minutes or 0) if tenant else 240,
+    )
+    participant = Participant(
+        id=uuid.uuid4(),
+        type="agent",
+        ref_id=agent.id,
+        display_name=agent.name,
+        avatar_url=None,
+    )
+    db.add_all((
+        agent,
+        participant,
+        AgentPermission(
+            agent_id=agent.id,
+            scope_type=perms["scope_type"],
+            access_level=perms["access_level"],
+        ),
+    ))
+    await db.flush()
+    await apply_suggested_tools(
+        db,
+        agent_id=agent.id,
+        tool_names=role.get("suggested_tools") or [],
+    )
+    return role, agent, participant
+
+
 def build_team_wakeup_message(team_plan: dict) -> str:
     """Build a user-visible kickoff message for the selected team leader."""
     roles = validate_team_plan(team_plan)
     leader = next(role for role in roles if role["is_group_leader"])
     teammate_lines = "\n".join(
-        f"- @{role['name']}：{role['role_description']}"
+        f"- @{role['name']}：{role['duties']}"
         for role in roles
         if not role["is_group_leader"]
     ) or "- 暂无其他成员"
@@ -251,8 +381,10 @@ def _hr_system_prompt() -> str:
 群主由项目需要决定，可能是创始人、业务负责人、技术负责人、运营负责人或项目经理；不要默认设置为 PMO。
 群主负责接收用户要求、拆分和分派工作、整合结果并向用户汇报；它不是招聘负责人。
 例如跨境电商、Shopify 建站或一件代发需求，应覆盖市场与竞品调研、选品/供应链、店铺搭建、内容与增长、运营数据/利润核算等真实必要能力，并按需求选择合适群主。
+每角色必须含 duties、soul（完整 soul.md 正文）、suggested_tools、suggested_permissions。
 只返回一个 JSON 对象，不要 Markdown，不要解释，不要 <think> 内容。格式：
-{"roles":[{"key":"english_snake_case","name":"岗位名称","role_description":"职责与交付物","personality":"工作风格","boundaries":"职责边界","is_group_leader":true}]}"""
+{"roles":[{"key":"english_snake_case","name":"岗位名称","duties":"职责与交付物","soul":"# 岗位\\n完整 soul.md 正文…","is_group_leader":true,
+ "suggested_tools":["group_write_workspace_file"],"suggested_permissions":{"scope_type":"company","access_level":"use"}}]}"""
 
 
 async def plan_team_with_hr(

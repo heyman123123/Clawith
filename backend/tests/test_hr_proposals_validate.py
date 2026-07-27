@@ -7,8 +7,11 @@ def _role(name: str, *, leader: bool = False) -> dict:
     return {
         "key": name.lower().replace(" ", "_"),
         "name": name,
-        "role_description": f"{name} responsibilities",
+        "duties": f"{name} responsibilities",
+        "soul": f"# {name}\nYou own {name.lower()} delivery.",
         "is_group_leader": leader,
+        "suggested_tools": ["group_write_workspace_file"],
+        "suggested_permissions": {"scope_type": "company", "access_level": "use"},
     }
 
 
@@ -16,6 +19,7 @@ def _proposal(pid: str, label: str, leader_name: str = "Leader") -> dict:
     return {
         "id": pid,
         "label": label,
+        "card_summary": f"{label} summary",
         "roles": [
             _role(leader_name, leader=True),
             _role("Engineer"),
@@ -32,7 +36,9 @@ def test_validate_team_building_proposals_accepts_three_valid_proposals():
     normalized = validate_team_building_proposals(proposals)
     assert len(normalized) == 3
     assert all(len(item["roles"]) == 2 for item in normalized)
+    assert all(item["card_summary"] for item in normalized)
     assert all(sum(r["is_group_leader"] for r in item["roles"]) == 1 for item in normalized)
+    assert all(r["soul"].startswith("#") for item in normalized for r in item["roles"])
 
 
 def test_validate_team_building_proposals_rejects_fewer_than_three():
