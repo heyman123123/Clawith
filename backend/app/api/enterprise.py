@@ -454,7 +454,49 @@ async def set_default_llm_model(
             f"from {previous_default} -> {model.id}"
         )
 
+    # Also backfill agents that have never had a model assigned (primary_model_id IS NULL).
+    # This complements the previous-default migration above: that one only catches agents
+    # that were already "implicitly following the old default"; this one catches the
+    # agents whose model was never set at all. Together they cover every agent that
+    # should reflect the new tenant default without explicit user choice.
+    from app.services.llm.default_propagation import (
+        propagate_tenant_default_to_unassigned_agents,
+    )
+    unassigned_backfilled = await propagate_tenant_default_to_unassigned_agents(db, tenant.id)
+    if unassigned_backfilled:
+        logger.info(
+            f"[set_default_llm_model] Backfilled {unassigned_backfilled} unassigned agents "
+            f"in tenant {tenant.id} with default model {model.id}"
+        )
+
     await db.commit()
+
+
+class PropagateDefaultRequest(BaseModel):
+    tenant_id: uuid.UUID | None = None
+
+
+@router.post("/llm-models/propagate-default")
+async def propagate_default_llm_model(
+    data: PropagateDefaultRequest,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill Agent.primary_model_id = Tenant.default_model_id for agents whose model is NULL."""
+    from app.services.llm.default_propagation import (
+        propagate_tenant_default_all_tenants,
+        propagate_tenant_default_to_unassigned_agents,
+    )
+
+    if data.tenant_id is not None:
+        count = await propagate_tenant_default_to_unassigned_agents(db, data.tenant_id)
+        await db.commit()
+        return {"applied": count, "tenants": [str(data.tenant_id)]}
+
+    summary = await propagate_tenant_default_all_tenants(db)
+    await db.commit()
+    applied = sum(summary.values())
+    return {"applied": applied, "tenants": [tid for tid, n in summary.items() if n]}
 
 
 @router.delete("/llm-models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)

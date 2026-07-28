@@ -240,6 +240,23 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[startup] Governance groups backfill failed: {e}")
 
         try:
+            from app.services.llm.default_propagation import (
+                propagate_tenant_default_all_tenants,
+            )
+
+            async with _gov_session() as _db:
+                _summary = await propagate_tenant_default_all_tenants(_db)
+                await _db.commit()
+                _applied = sum(_summary.values())
+                logger.info(
+                    "[startup] Tenant default-model backfill: applied={} tenants_scanned={}",
+                    _applied,
+                    len(_summary),
+                )
+        except Exception as e:  # noqa: BLE001 — best-effort startup task, see governance_groups above
+            logger.warning(f"[startup] Tenant default-model backfill failed: {e}")
+
+        try:
             import shutil
             from pathlib import Path as _Path
             from app.config import get_settings as _gs
