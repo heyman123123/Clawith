@@ -296,12 +296,24 @@ async def lifespan(app: FastAPI):
                 seed_official_workflow_templates,
             )
             from app.services.ao.asset_directory_enforcer import install_dir_assert_hook
+            from app.models.tenant import Tenant
+            from sqlalchemy import select as _select
             install_dir_assert_hook()
             from app.database import async_session
             async with async_session() as _seed_session:
-                inserted = await seed_official_workflow_templates(_seed_session)
+                tenant_ids = list(
+                    (await _seed_session.scalars(_select(Tenant.id))).all()
+                )
+                inserted_total = 0
+                for tid in tenant_ids:
+                    inserted_total += await seed_official_workflow_templates(
+                        _seed_session, tenant_id=tid
+                    )
                 await _seed_session.commit()
-            logger.info(f"[startup] official workflow templates seeded: {inserted}")
+            logger.info(
+                f"[startup] official workflow templates seeded: {inserted_total} "
+                f"across {len(tenant_ids)} tenants"
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[startup] Workflow templates seed failed: {e}")
 
