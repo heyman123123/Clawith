@@ -237,3 +237,40 @@ async def select_hr_proposal(
         )
     except HrReviewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class TemplateMatchIn(BaseModel):
+    requirements: str = Field(min_length=4, max_length=20_000)
+    top_n: int = Field(default=3, ge=1, le=10)
+
+
+class TemplateMatchOut(BaseModel):
+    template_id: uuid.UUID
+    slug: str
+    title: str
+    summary: str
+    score: float
+    matched_keywords: list[str]
+    rank: int
+
+
+@router.post("/template-match", response_model=list[TemplateMatchOut])
+async def hr_template_match(
+    body: TemplateMatchIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """P6 — surface the Top-N curated templates for HR to choose from."""
+    from app.services.workflow_metrics import match_top_templates
+
+    tenant_id = _tenant_id(current_user)
+    matches = await match_top_templates(
+        db,
+        tenant_id=tenant_id,
+        requirements=body.requirements,
+        top_n=body.top_n,
+        actor_user_id=current_user.id,
+    )
+    await db.commit()
+    return [m.to_dict() for m in matches]  # type: ignore[union-attr]
+

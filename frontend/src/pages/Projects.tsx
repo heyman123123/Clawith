@@ -9,6 +9,7 @@ import { projectApi } from '../services/projectApi';
 import type { CSSProperties } from 'react';
 
 import { isHrReviewBoardGroup } from '../utils/hrReviewBoard';
+import WorkflowPanel from '../components/WorkflowPanel';
 
 export default function Projects() {
     const { t } = useTranslation();
@@ -105,11 +106,12 @@ export default function Projects() {
                     <div
                         key={project.id}
                         style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            gap: 12,
+                            display: 'grid',
+                            gridTemplateColumns: 'minmax(0, 1fr) minmax(280px, 360px)',
+                            gap: 20,
                             borderTop: '1px solid var(--border, #e5e7eb)',
-                            padding: '13px 0',
+                            padding: '16px 0',
+                            alignItems: 'start',
                         }}
                     >
                         <div>
@@ -118,19 +120,25 @@ export default function Projects() {
                                 {project.members.length} 位成员 · {project.status === 'active' ? '治理与团队已就绪' : project.status}
                                 {project.failure_reason ? ` · ${project.failure_reason}` : ''}
                             </div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                                {project.decision_group_id && (
+                                    <button onClick={() => navigate(`/groups/${project.decision_group_id}`)} style={secondaryStyle}>
+                                        决策群
+                                    </button>
+                                )}
+                                {project.group_id && (
+                                    <button onClick={() => navigate(`/groups/${project.group_id}`)} style={primaryStyle}>
+                                        执行群
+                                    </button>
+                                )}
+                            </div>
                         </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'end', gap: 8 }}>
-                            {project.decision_group_id && (
-                                <button onClick={() => navigate(`/groups/${project.decision_group_id}`)} style={secondaryStyle}>
-                                    决策群
-                                </button>
-                            )}
-                            {project.group_id && (
-                                <button onClick={() => navigate(`/groups/${project.group_id}`)} style={primaryStyle}>
-                                    执行群
-                                </button>
-                            )}
-                        </div>
+                        <WorkflowPanel
+                            workflowId={project.id}
+                            groupId={project.group_id ?? undefined}
+                            workflowName={project.name}
+                            compact
+                        />
                     </div>
                 ))}
             </section>

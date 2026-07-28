@@ -644,6 +644,104 @@ export interface OrgDepartmentItem {
     member_count?: number;
 }
 
+export interface DeliveryRoundItem {
+    id: string;
+    workflow_id: string;
+    round_no: number;
+    quality_score: number | null;
+    coverage_score: number | null;
+    final_score: number | null;
+    decision: 'pending' | 'approved' | 'rejected' | 'withdrawn';
+    pass_threshold: number;
+    passed: boolean;
+    exhausted: boolean;
+    created_at: string;
+    decided_at: string | null;
+}
+
+export interface HumanReviewItem {
+    id: string;
+    tenant_id: string;
+    workflow_id: string | null;
+    skill_id: string | null;
+    agent_id: string | null;
+    kind:
+        | 'high_risk_skill'
+        | 'qc_anomaly_rectification'
+        | 'shareholder_decision'
+        | 'approval_card'
+        | 'decision_card'
+        | 'rectification';
+    status: 'open' | 'approved' | 'rejected' | 'withdrawn' | 'auto_resolved';
+    payload: Record<string, unknown>;
+    decision_notes: string | null;
+    created_at: string;
+    resolved_at: string | null;
+}
+
+export interface OfficialTemplateItem {
+    id?: string;
+    slug: string;
+    title: string;
+    summary: string;
+    tags: string[];
+    keywords: string[];
+    recommended_roles: string[];
+    quality_threshold: number;
+    ao_provider?: string | null;
+    ao_model?: string | null;
+    status?: string;
+}
+
+export const deliveryReviewApi = {
+    submitRound: (
+        workflowId: string,
+        body: {
+            quality_score: number;
+            coverage_score: number;
+            pass_threshold?: number;
+            coverage_notes?: string;
+            quality_notes?: string;
+            rectification_items?: Array<Record<string, unknown>>;
+        }
+    ): Promise<DeliveryRoundItem> =>
+        request<DeliveryRoundItem>(`/delivery-review/${workflowId}/round`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        }),
+    listRounds: (workflowId: string): Promise<DeliveryRoundItem[]> =>
+        request<DeliveryRoundItem[]>(`/delivery-review/${workflowId}`),
+};
+
+export const humanReviewApi = {
+    list: (params: { status?: string; kind?: string; limit?: number } = {}): Promise<HumanReviewItem[]> => {
+        const search = new URLSearchParams();
+        if (params.status) search.set('status', params.status);
+        if (params.kind) search.set('kind', params.kind);
+        if (params.limit) search.set('limit', String(params.limit));
+        const qs = search.toString();
+        return request<HumanReviewItem[]>(`/human-reviews${qs ? `?${qs}` : ''}`);
+    },
+    open: (body: Partial<HumanReviewItem>): Promise<HumanReviewItem> =>
+        request<HumanReviewItem>(`/human-reviews`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        }),
+    resolve: (
+        id: string,
+        body: { decision: 'approved' | 'rejected' | 'withdrawn' | 'auto_resolved'; notes?: string }
+    ): Promise<HumanReviewItem> =>
+        request<HumanReviewItem>(`/human-reviews/${id}/resolve`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        }),
+};
+
+export const officialTemplatesApi = {
+    list: (): Promise<OfficialTemplateItem[]> =>
+        request<OfficialTemplateItem[]>(`/workflow-metrics/templates`),
+};
+
 export const orgApi = {
     departments: () =>
         request<{ items: OrgDepartmentItem[]; total_member: number }>('/enterprise/org/departments'),

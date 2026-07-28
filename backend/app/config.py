@@ -188,6 +188,26 @@ class Settings(BaseSettings):
     # Exa AI (Search API)
     EXA_API_KEY: str = ""
 
+    # Agency Orchestrator (AO) integration
+    # We invoke the `ao` CLI as a subprocess. By default we expect it on PATH
+    # (`npm i -g agency-orchestrator`). In Docker images we ship the source
+    # under backend/vendor/ao and use `node` directly.
+    AO_ENABLED: bool = False
+    AO_CLI_PATH: str = "ao"
+    AO_NODE_BIN: str = "node"
+    AO_VENDOR_DIR: str | None = ""  # absolute path to unpacked npm package; "" = not vendored
+    AO_HOME_DIR: str | None = ""    # scratch dir; defaults under AGENT_DATA_DIR/ao
+    AO_OUTPUT_DIR: str | None = ""  # defaults under AO_HOME_DIR/output
+    AO_AGENTS_DIR: str | None = ""  # role library; defaults under vendor/agency-agents
+    AO_WORKFLOWS_DIR: str | None = ""
+    AO_PROVIDER: str = "openai"           # force openai-compatible
+    AO_MODEL: str = "clawith-gateway"
+    AO_BASE_URL: str | None = ""                 # Clawith LLM gateway base url
+    AO_API_KEY: str = "sk-clawith-ao"     # never leave container
+    AO_TIMEOUT_SECONDS: int = Field(default=1800, gt=0)
+    AO_MAX_RETRIES: int = Field(default=2, ge=0, le=10)
+    AO_CONCURRENCY: int = Field(default=2, gt=0, le=16)
+
 
     # Sandbox configuration
     SANDBOX_TYPE: SandboxType = SandboxType.SUBPROCESS
@@ -210,6 +230,12 @@ class Settings(BaseSettings):
         "AGENT_RUNTIME_RUN_COMPACT_TOOL_RESULT_BYTES",
         "AGENT_RUNTIME_VERIFY_REPAIR_COMPACT_ROUNDS",
         "AGENT_RUNTIME_SOUL_MAX_CHARS",
+        "AO_HOME_DIR",
+        "AO_OUTPUT_DIR",
+        "AO_AGENTS_DIR",
+        "AO_VENDOR_DIR",
+        "AO_WORKFLOWS_DIR",
+        "AO_BASE_URL",
         mode="before",
     )
     @classmethod
@@ -226,6 +252,24 @@ class Settings(BaseSettings):
         if not normalized:
             raise ValueError("Runtime graph name and version must not be blank")
         return normalized
+
+    @model_validator(mode="after")
+    def _populate_ao_defaults(self) -> Self:
+        """Resolve AO_* default paths once so subprocess invocations stay stable."""
+        base = Path(self.AO_HOME_DIR) if self.AO_HOME_DIR else Path(self.AGENT_DATA_DIR) / "ao"
+        if not self.AO_HOME_DIR:
+            object.__setattr__(self, "AO_HOME_DIR", str(base))
+        if not self.AO_OUTPUT_DIR:
+            object.__setattr__(self, "AO_OUTPUT_DIR", str(base / "output"))
+        if not self.AO_WORKFLOWS_DIR:
+            object.__setattr__(self, "AO_WORKFLOWS_DIR", str(base / "workflows"))
+        if not self.AO_AGENTS_DIR and self.AO_VENDOR_DIR:
+            vendor = Path(self.AO_VENDOR_DIR)
+            for candidate in ("agency-agents-zh", "agency-agents"):
+                if (vendor / candidate).is_dir():
+                    object.__setattr__(self, "AO_AGENTS_DIR", str(vendor / candidate))
+                    break
+        return self
 
     @model_validator(mode="after")
     def _claim_renewal_precedes_expiry(self) -> Self:

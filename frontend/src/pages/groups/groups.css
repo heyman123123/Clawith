@@ -1633,3 +1633,395 @@
 .group-row.group:hover .group-row-time {
     display: none;
 }
+
+/* ─── Workflow panel (P1.5) ─────────────────────────────────────────────── */
+
+.wf-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl);
+    padding: 18px 18px 20px;
+    color: var(--text-primary);
+}
+
+.wf-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.wf-panel-header-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.wf-panel-eyebrow {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.wf-panel-title {
+    font-size: var(--text-base);
+    font-weight: 650;
+    color: var(--text-primary);
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+/* Status badge ── tones share palette with the rest of the app. */
+.wf-panel-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    font-size: var(--text-xs);
+    font-weight: 650;
+    border: 1px solid transparent;
+    flex-shrink: 0;
+}
+
+.wf-panel-status--active {
+    background: var(--success-subtle);
+    color: var(--success);
+    border-color: rgba(34, 197, 94, 0.35);
+}
+
+.wf-panel-status--pending {
+    background: var(--info-subtle);
+    color: var(--info);
+    border-color: rgba(59, 130, 246, 0.35);
+}
+
+.wf-panel-status--paused {
+    background: rgba(139, 139, 158, 0.16);
+    color: var(--text-secondary);
+    border-color: var(--border-default);
+}
+
+.wf-panel-status--retry {
+    background: var(--warning-subtle);
+    color: var(--warning);
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
+.wf-panel-status--success {
+    background: var(--success-subtle);
+    color: var(--success);
+    border-color: rgba(34, 197, 94, 0.35);
+}
+
+.wf-panel-status--failed {
+    background: var(--error-subtle);
+    color: var(--error);
+    border-color: rgba(239, 68, 68, 0.35);
+}
+
+.wf-panel-status--idle {
+    background: rgba(139, 139, 158, 0.12);
+    color: var(--text-tertiary);
+    border-color: var(--border-subtle);
+}
+
+.wf-panel-summary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-lg);
+    padding: 10px;
+}
+
+.wf-panel-summary-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    text-align: center;
+}
+
+.wf-panel-summary-num {
+    font-size: var(--text-lg);
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.wf-panel-summary-label {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+}
+
+.wf-panel-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wf-panel-section-title {
+    margin: 0;
+    font-size: var(--text-sm);
+    font-weight: 650;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+}
+
+.wf-panel-empty {
+    padding: 12px;
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    color: var(--text-tertiary);
+    font-size: var(--text-sm);
+    text-align: center;
+}
+
+/* Role grid ── four-power (multi-role) cast. */
+.wf-panel-role-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px;
+}
+
+.wf-panel-role-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wf-panel-role-card-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wf-panel-role-card-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--radius-sm);
+}
+
+.wf-panel-role-card-label {
+    font-size: var(--text-sm);
+    font-weight: 650;
+    color: var(--text-primary);
+}
+
+.wf-panel-role-card-count {
+    margin-left: auto;
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    background: var(--bg-elevated);
+    padding: 1px 7px;
+    border-radius: var(--radius-full);
+}
+
+.wf-panel-role-card-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.wf-panel-role-card-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    padding: 3px 6px;
+    border-radius: var(--radius-sm);
+    background: rgba(225, 225, 232, 0.04);
+}
+
+.wf-panel-role-card-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wf-panel-role-card-leader {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--success);
+    background: var(--success-subtle);
+    padding: 1px 6px;
+    border-radius: var(--radius-full);
+}
+
+.wf-panel-role-card--scheduler .wf-panel-role-card-icon {
+    background: rgba(99, 91, 255, 0.16);
+    color: #a5b4fc;
+}
+
+.wf-panel-role-card--quality .wf-panel-role-card-icon {
+    background: var(--success-subtle);
+    color: var(--success);
+}
+
+.wf-panel-role-card--delivery .wf-panel-role-card-icon {
+    background: var(--warning-subtle);
+    color: var(--warning);
+}
+
+.wf-panel-role-card--executor .wf-panel-role-card-icon {
+    background: var(--info-subtle);
+    color: var(--info);
+}
+
+.wf-panel-role-card--stakeholder .wf-panel-role-card-icon {
+    background: rgba(139, 139, 158, 0.16);
+    color: var(--text-secondary);
+}
+
+/* Steps ── progress list. */
+.wf-panel-steps {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wf-panel-step {
+    display: flex;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    align-items: flex-start;
+}
+
+.wf-panel-step--running {
+    border-color: rgba(59, 130, 246, 0.35);
+}
+
+.wf-panel-step--succeeded {
+    border-color: rgba(34, 197, 94, 0.28);
+}
+
+.wf-panel-step--retry {
+    border-color: rgba(245, 158, 11, 0.32);
+}
+
+.wf-panel-step--failed {
+    border-color: rgba(239, 68, 68, 0.35);
+}
+
+.wf-panel-step-order {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.wf-panel-step-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.wf-panel-step-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.wf-panel-step-id {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    background: rgba(225, 225, 232, 0.05);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+}
+
+.wf-panel-step-role {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    font-weight: 650;
+}
+
+.wf-panel-step-task {
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    line-height: 1.45;
+}
+
+.wf-panel-step-score {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+}
+
+.wf-panel-step-pill {
+    margin-left: auto;
+    font-size: var(--text-xs);
+    font-weight: 650;
+    padding: 1px 8px;
+    border-radius: var(--radius-full);
+    border: 1px solid transparent;
+}
+
+.wf-panel-step-pill--pending {
+    background: rgba(139, 139, 158, 0.12);
+    color: var(--text-tertiary);
+    border-color: var(--border-subtle);
+}
+
+.wf-panel-step-pill--running {
+    background: var(--info-subtle);
+    color: var(--info);
+    border-color: rgba(59, 130, 246, 0.3);
+}
+
+.wf-panel-step-pill--succeeded {
+    background: var(--success-subtle);
+    color: var(--success);
+    border-color: rgba(34, 197, 94, 0.3);
+}
+
+.wf-panel-step-pill--retry {
+    background: var(--warning-subtle);
+    color: var(--warning);
+    border-color: rgba(245, 158, 11, 0.3);
+}
+
+.wf-panel-step-pill--failed {
+    background: var(--error-subtle);
+    color: var(--error);
+    border-color: rgba(239, 68, 68, 0.3);
+}
+
+.wf-panel-step-pill--idle {
+    background: rgba(139, 139, 158, 0.08);
+    color: var(--text-tertiary);
+    border-color: var(--border-subtle);
+}

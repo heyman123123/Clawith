@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.models.agent import Agent
 from app.models.group import Group, GroupMember
 from app.models.org import AgentAgentRelationship
@@ -21,6 +24,8 @@ from app.models.tenant import Tenant
 from app.services import group_chat_service
 from app.services.access_relationships import ensure_access_granted_platform_relationships
 from app.services.agent_manager import agent_manager
+from app.services.ao.run_repository import create_run_row
+from app.services.ao.workflow_composer import compose_initial_workflow
 from app.services.governance_membership import select_decision_group_members
 from app.services.group_chat_service import GroupChatServiceError
 from app.services.llm.model_resolution import load_active_model
@@ -30,9 +35,12 @@ from app.services.project_team_builder import (
     materialize_role_agent,
 )
 from app.services.storage import store_agent_bytes
+from app.services.workflow_role_seeder import ensure_workflow_system_roles
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+settings = get_settings()
 
 
 class ProjectProvisioningError(RuntimeError):
@@ -260,6 +268,121 @@ async def ensure_project_decision_group(
     await db.flush()
 
 
+async def compose_initial_workflow_for_project(
+    db: AsyncSession,
+    *,
+    workflow: ProjectWorkflow,
+    roles: list[dict],
+    default_model_id: uuid.UUID | None,
+) -> dict | None:
+    """Seed the four-power Agents + AO YAML + ``workflow_run_steps`` for a workflow.
+
+    Behaviour:
+
+    * Ensure scheduler / quality / delivery Agents exist for the tenant.
+    * Write the AO YAML via ``workflow_composer.compose_initial_workflow``.
+    * Insert three ``WorkflowRunStep`` rows (clarify / execute / review) via
+      ``run_repository.create_run_row``.
+    * Stamp ``yaml_content``, ``scheduler_agent_id`` etc. onto ``workflow``.
+
+    Failures degrade gracefully: AO being offline, role seeder erroring, or
+    YAML write failing MUST NOT abort the project kickoff — the workflow
+    stays ``active`` and ``yaml_content`` stays ``None`` so P1.4 can retry.
+    Returns the resolved metadata dict on success, ``None`` on graceful skip.
+    """
+    system_agents: dict[str, Agent] | None = None
+    try:
+        system_agents = await ensure_workflow_system_roles(
+            db,
+            tenant_id=workflow.tenant_id,
+            creator_id=workflow.creator_id,
+            model_id=default_model_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - degraded path; see docstring
+        logger.exception(
+            "[ProjectProvisioning] ensure_workflow_system_roles failed for workflow {}: {}",
+            workflow.id,
+            exc,
+        )
+        system_agents = None
+
+    agent_ids: dict[str, uuid.UUID] = {
+        key: agent.id for key, agent in (system_agents or {}).items()
+    }
+    if not all(key in agent_ids for key in ("scheduler", "quality", "delivery")):
+        logger.warning(
+            "[ProjectProvisioning] AO compose for {} missing one of scheduler/quality/delivery (have={})",
+            workflow.id,
+            sorted(agent_ids),
+        )
+
+    try:
+        yaml_path, compose_metadata = await compose_initial_workflow(
+            db,
+            workflow=workflow,
+            agent_ids=agent_ids,
+            roles=roles,
+        )
+    except Exception as exc:  # noqa: BLE001 - degraded path; see docstring
+        logger.exception(
+            "[ProjectProvisioning] compose_initial_workflow failed for workflow {}: {}",
+            workflow.id,
+            exc,
+        )
+        return None
+
+    run_dir = Path(yaml_path).parent
+    try:
+        await create_run_row(
+            db,
+            workflow=workflow,
+            yaml_text=str(compose_metadata["yaml_text"]),
+            run_dir=run_dir,
+            agent_ids=agent_ids,
+        )
+    except Exception as exc:  # noqa: BLE001 - degraded path; see docstring
+        logger.exception(
+            "[ProjectProvisioning] create_run_row failed for workflow {}: {}",
+            workflow.id,
+            exc,
+        )
+
+    workflow.yaml_content = str(compose_metadata["yaml_text"])
+    workflow.ao_run_dir = str(run_dir)
+    workflow.ao_provider = settings.AO_PROVIDER
+    workflow.ao_model = settings.AO_MODEL
+    workflow.ao_concurrency = int(settings.AO_CONCURRENCY)
+    workflow.template_key_ao = workflow.template_key
+    if system_agents is not None:
+        scheduler = system_agents.get("scheduler")
+        quality = system_agents.get("quality")
+        delivery = system_agents.get("delivery")
+        if scheduler is not None:
+            workflow.scheduler_agent_id = scheduler.id
+        if quality is not None:
+            workflow.quality_agent_id = quality.id
+        if delivery is not None:
+            workflow.delivery_agent_id = delivery.id
+
+    executor_ids: list[str] = []
+    power_slot_keys = set(agent_ids.keys())
+    for role in roles:
+        key = str(role.get("key") or "").strip()
+        if not key or key in power_slot_keys:
+            continue
+        executor_ids.append(key)
+    workflow.executor_agent_ids = executor_ids
+    workflow.member_count = len(roles) + (len(system_agents) if system_agents else 0)
+    await db.flush()
+    logger.info(
+        "[ProjectProvisioning] AO compose OK for workflow {} → {} (executor_keys={})",
+        workflow.id,
+        yaml_path,
+        executor_ids,
+    )
+    return compose_metadata
+
+
 async def provision_team_from_plan(
     db: AsyncSession,
     *,
@@ -271,8 +394,16 @@ async def provision_team_from_plan(
     requirements: str,
     roles: list[dict],
     template_key: str = "hr_generated",
+    enable_ao_compose: bool = True,
 ) -> dict:
-    """Create workflow, agents, execution group, decision group, and kickoff message."""
+    """Create workflow, agents, execution group, decision group, and kickoff message.
+
+    When ``enable_ao_compose`` is True (default) the function additionally
+    seeds the four-power scheduler/quality/delivery Agents, composes the
+    initial AO YAML, and writes ``workflow_run_steps`` rows for the default
+    DAG. AO failures degrade gracefully (yaml_content=None, workflow still
+    active) so HR confirmation never blocks on AO availability.
+    """
     tenant = await db.get(Tenant, tenant_id)
     default_model_id = await project_default_model_id(
         db,
@@ -406,6 +537,13 @@ async def provision_team_from_plan(
     except GroupMessageServiceError as exc:
         raise ProjectProvisioningError(f"Project kickoff could not be created: {exc}") from exc
 
+    if enable_ao_compose:
+        await compose_initial_workflow_for_project(
+            db,
+            workflow=workflow,
+            roles=roles,
+            default_model_id=default_model_id,
+        )
     workflow.status = "active"
     workflow.updated_at = datetime.now(UTC)
     await db.flush()
@@ -414,6 +552,23 @@ async def provision_team_from_plan(
         tenant_id=tenant_id,
         leader_agent=leader_agent,
     )
+
+    kickoff_summary: dict | None = None
+    if enable_ao_compose and workflow.yaml_content:
+        from app.services.ao.scheduler_kickoff import run_scheduler_kickoff
+
+        try:
+            kickoff_summary = await run_scheduler_kickoff(db, workflow_id=workflow.id)
+        except Exception as exc:  # noqa: BLE001 — kickoff is best-effort
+            logger.warning(
+                "[AOIntegration] scheduler kickoff skipped for {wf}: {err}",
+                wf=workflow.id,
+                err=exc,
+            )
+
+    await _seed_evolution_baselines(db, workflow=workflow, agents=agents)
+    await _seed_harness_fixtures(db, tenant_id=tenant_id, agents=agents)
+    await _seed_workflow_templates(db, tenant_id=tenant_id, workflow=workflow, agents=agents)
 
     return {
         "workflow_id": str(workflow.id),
@@ -426,4 +581,131 @@ async def provision_team_from_plan(
         "workflow": workflow,
         "group": group,
         "session": session,
+        "scheduler_kickoff": kickoff_summary,
     }
+
+
+async def _seed_evolution_baselines(
+    db,
+    *,
+    workflow: ProjectWorkflow,
+    agents: list[tuple[dict, Agent, Participant]],
+) -> None:
+    """Capture version-1 baselines for every role agent (P3).
+
+    We treat ``role_description`` (or project requirements) as the
+    de-facto soul when no workspace file is available — the field is
+    always populated for the agents we created from role plans.
+    Idempotent: existing baselines are preserved.
+    """
+    try:
+        from app.services.ao.evolution_engine import seed_role_baseline
+    except ImportError:
+        return
+
+    for role_row, agent, _participant in agents:
+        soul_md = (
+            (getattr(agent, "role_description", "") or "").strip()
+            or getattr(workflow, "requirements", "") or ""
+            or role_row.get("name", "")
+        )
+        if not soul_md:
+            soul_md = f"baseline:{getattr(agent, 'name', 'agent')}"
+        try:
+            await seed_role_baseline(
+                db,
+                agent=agent,
+                soul_md=soul_md,
+                summary=f"auto-baseline for {agent.name} ({role_row.get('name', '')})",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[EvolutionEngine] baseline seed failed for {agent}: {err}",
+                agent=agent.id,
+                err=exc,
+            )
+    await db.flush()
+
+
+async def _seed_harness_fixtures(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    agents: list[tuple[dict, Agent, Participant]],
+) -> None:
+    """Create default regression harness fixtures (P4) for every role agent."""
+    try:
+        from app.services.ao.harness_fixture_seeder import (
+            ensure_default_harness_fixtures,
+        )
+    except ImportError:
+        return
+
+    for role_row, agent, _participant in agents:
+        role_key = str(role_row.get("key") or role_row.get("name") or "executor")
+        try:
+            await ensure_default_harness_fixtures(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent.id,
+                role_key=role_key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[HarnessSeeder] fixture seed failed for {agent}: {err}",
+                agent=agent.id,
+                err=exc,
+            )
+    await db.flush()
+
+
+async def _seed_workflow_templates(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    workflow: ProjectWorkflow,
+    agents: list[tuple[dict, Agent, Participant]],
+) -> None:
+    """Persist a curated catalog row keyed by the project template (P6)."""
+
+    if workflow.template_key == "":
+        return
+    try:
+        from app.models.metrics import WorkflowTemplate
+    except ImportError:
+        return
+    try:
+        exists = await db.scalar(
+            select(WorkflowTemplate.id).where(
+                WorkflowTemplate.tenant_id == tenant_id,
+                WorkflowTemplate.slug == workflow.template_key,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[MetricsSeeder] catalog lookup failed: {err}", err=exc)
+        return
+    if exists is not None:
+        return
+    role_keys = [str(r.get("key") or r.get("name") or "executor") for r, _, _ in agents]
+    quality_threshold = int(getattr(workflow, "quality_threshold", None) or 80)
+    try:
+        template = WorkflowTemplate(
+            tenant_id=tenant_id,
+            slug=workflow.template_key,
+            title=getattr(workflow, "name", None) or workflow.template_key,
+            summary=getattr(workflow, "requirements_excerpt", "") or "",
+            tags=list(getattr(workflow, "tags", None) or []),
+            keywords=[
+                workflow.template_key,
+                *role_keys,
+            ],
+            recommended_roles=role_keys,
+            quality_threshold=quality_threshold,
+            status="published",
+        )
+        db.add(template)
+        await db.flush()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[MetricsSeeder] template seed failed: {err}", err=exc
+        )

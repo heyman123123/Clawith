@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, PrimaryKeyConstraint, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, PrimaryKeyConstraint, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,6 +17,9 @@ class ProjectWorkflow(Base):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="pk_project_workflows"),
         Index("ix_project_workflows_tenant_created_at", "tenant_id", "created_at"),
+        Index("ix_project_workflows_requirement_id", "requirement_id"),
+        Index("ix_project_workflows_template_key_ao", "template_key_ao"),
+        Index("ix_project_workflows_started_at", "started_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -49,6 +52,63 @@ class ProjectWorkflow(Base):
         UUID(as_uuid=True), ForeignKey("agents.id", name="fk_project_workflows_group_leader_agent_id_agents"), nullable=True
     )
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AO integration columns added by ``202607271300_add_ao_workflow_runs``.
+    # All nullable so historical rows keep working until P1.4 backfills.
+    requirement_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    yaml_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_key_ao: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ao_run_dir: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    scheduler_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", name="fk_project_workflows_scheduler_agent_id_agents", ondelete="SET NULL"),
+        nullable=True,
+    )
+    quality_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", name="fk_project_workflows_quality_agent_id_agents", ondelete="SET NULL"),
+        nullable=True,
+    )
+    delivery_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", name="fk_project_workflows_delivery_agent_id_agents", ondelete="SET NULL"),
+        nullable=True,
+    )
+    delivery_manager_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", name="fk_project_workflows_delivery_manager_id_users", ondelete="SET NULL"),
+        nullable=True,
+    )
+    executor_agent_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    stakeholder_agent_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    member_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    ao_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ao_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ao_concurrency: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ao_max_retries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quality_threshold: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    skill_permission_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    allow_custom_skill: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    total_input_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    total_output_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    final_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_resume_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()

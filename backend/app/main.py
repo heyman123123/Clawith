@@ -148,6 +148,19 @@ async def lifespan(app: FastAPI):
     from app.services.wechat_channel import wechat_poll_manager
     from app.services.discord_gateway import discord_gateway_manager
 
+    async def metrics_cron_startup() -> None:
+        """P7 — install + start the nightly metrics backfill cron."""
+        from app.services.metrics_cron import install_metrics_cron, run_metrics_backfill_for_all_tenants
+        from datetime import time
+
+        install_metrics_cron(async_session_factory, run_at=time(hour=2, minute=30), backfill_days=7)
+        await run_metrics_backfill_for_all_tenants(async_session_factory, days=1)
+
+    def async_session_factory():
+        from app.database import async_session
+
+        return async_session()
+
     runtime_stack = AsyncExitStack()
 
     if _role_enabled("all", "bootstrap"):
@@ -279,6 +292,20 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[startup] Skills seed failed: {e}")
 
         try:
+            from app.services.workflow_template_seeder import (
+                seed_official_workflow_templates,
+            )
+            from app.services.ao.asset_directory_enforcer import install_dir_assert_hook
+            install_dir_assert_hook()
+            from app.database import async_session
+            async with async_session() as _seed_session:
+                inserted = await seed_official_workflow_templates(_seed_session)
+                await _seed_session.commit()
+            logger.info(f"[startup] official workflow templates seeded: {inserted}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[startup] Workflow templates seed failed: {e}")
+
+        try:
             from app.services.agent_seeder import seed_default_agents
             await seed_default_agents()
         except Exception as e:
@@ -327,6 +354,7 @@ async def lifespan(app: FastAPI):
             task_specs.extend([
                 ("trigger_daemon", start_trigger_daemon()),
                 ("agent_schedule_scheduler", start_scheduler()),
+                ("metrics_cron", metrics_cron_startup()),
             ])
         if _role_enabled("all", "connector"):
             task_specs.extend([
@@ -439,6 +467,9 @@ from app.api.okr import router as okr_router
 from app.api.onboarding import router as onboarding_router
 from app.api.projects import router as projects_router
 from app.api.hr_review import router as hr_review_router
+from app.api.ao_workflows import router as ao_workflows_router
+from app.api.skill_market import router as skill_market_router
+from app.api.workflow_metrics_api import router as workflow_metrics_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
@@ -492,6 +523,12 @@ app.include_router(credentials_router, prefix=settings.API_PREFIX)
 app.include_router(agentbay_control_router, prefix=settings.API_PREFIX)
 app.include_router(okr_router)  # OKR — self-prefixed at /api/okr
 app.include_router(onboarding_router, prefix=settings.API_PREFIX)
+app.include_router(ao_workflows_router)  # AO — self-prefixed at /api/ao
+app.include_router(skill_market_router, prefix=settings.API_PREFIX)  # P5
+app.include_router(workflow_metrics_router, prefix=settings.API_PREFIX)  # P6
+from app.api.delivery_review import router as delivery_review_router  # P3 + P7
+
+app.include_router(delivery_review_router, prefix=settings.API_PREFIX)  # P3 + P7
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])

@@ -19,6 +19,11 @@ const Messages = lazy(() => import('./pages/Messages'));
 const EnterpriseSettings = lazy(() => import('./pages/EnterpriseSettings'));
 const InvitationCodes = lazy(() => import('./pages/InvitationCodes'));
 const AdminCompanies = lazy(() => import('./pages/AdminCompanies'));
+const SkillMarket = lazy(() => import('./pages/SkillMarket'));
+const MetricsDashboard = lazy(() => import('./pages/MetricsDashboard'));
+const OfficialTemplates = lazy(() => import('./pages/OfficialTemplates'));
+const DeliveryReviewCenter = lazy(() => import('./pages/DeliveryReviewCenter'));
+const AssetBrowser = lazy(() => import('./pages/AssetBrowser'));
 const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
 const SSOEntry = lazy(() => import('./pages/SSOEntry'));
 const OKR = lazy(() => import('./pages/OKR'));
@@ -302,6 +307,12 @@ export default function App() {
                     <Route path="okr" element={<OKR />} />
                     <Route path="invitations" element={<InvitationCodes />} />
                     <Route path="admin/platform-settings" element={<AdminCompanies />} />
+                    <Route path="skill-market" element={<SkillMarket />} />
+                    <Route path="metrics-dashboard" element={<MetricsDashboard />} />
+                    <Route path="official-templates" element={<OfficialTemplates />} />
+                    <Route path="delivery-review" element={<DeliveryReviewCenter />} />
+                    <Route path="delivery-review/:workflowId" element={<DeliveryReviewCenter />} />
+                    <Route path="assets/:workflowId" element={<AssetBrowser />} />
                 </Route>
             </Routes>
             </Suspense>
