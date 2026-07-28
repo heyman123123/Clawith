@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from alembic import op
 
-revision = "add_delivery_review_and_human_queue"
+revision = "add_delivery_review"
 down_revision = "add_skill_market_and_metrics"
 branch_labels = None
 depends_on = None
@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column(
             "workflow_id",
             UUID(as_uuid=True),
-            sa.ForeignKey("workflow_runs.id", ondelete="CASCADE"),
+            sa.ForeignKey("project_workflows.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("round_no", sa.Integer(), nullable=False, server_default=sa.text("1")),
@@ -91,7 +91,7 @@ def upgrade() -> None:
         sa.Column(
             "workflow_id",
             UUID(as_uuid=True),
-            sa.ForeignKey("workflow_runs.id", ondelete="CASCADE"),
+            sa.ForeignKey("project_workflows.id", ondelete="CASCADE"),
             nullable=True,
         ),
         sa.Column(

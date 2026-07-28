@@ -75,7 +75,7 @@ class WorkflowDeliveryApproval(Base):
     workflow_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey(
-            "workflow_runs.id",
+            "project_workflows.id",
             name="fk_workflow_delivery_approvals_workflow_id",
             ondelete="CASCADE",
         ),
@@ -153,7 +153,7 @@ class WorkflowHumanReview(Base):
     workflow_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey(
-            "workflow_runs.id",
+            "project_workflows.id",
             name="fk_workflow_human_reviews_workflow_id",
             ondelete="CASCADE",
         ),

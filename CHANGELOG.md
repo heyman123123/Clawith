@@ -5,7 +5,61 @@ All notable changes to Clawith × Agency Orchestrator integration are documented
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — P8 Defaults & UI Polish
+
+### Added
+
+* `backend/app/services/llm/default_propagation.py` —
+  `propagate_tenant_default_to_unassigned_agents(tenant_id)` 回填 `Agent.primary_model_id IS NULL`
+  的 agent 为该租户的 `Tenant.default_model_id`；内部 helper 保证 default 指向**启用且未删除**的
+  LLMModel,否则安全返回 0 不写库。
+  `propagate_tenant_default_all_tenants()` 全 tenant 扫描,返回 `{tenant_id: count}`。
+* `backend/app/api/enterprise.py` — `POST /api/enterprise/llm-models/propagate-default`
+  admin 路由(可选 `tenant_id`),返回 `{applied, tenants}`。
+  `set_default_llm_model` 在原有 `previous_default → new_default` 迁移之上**额外**调用
+  回填,让从未配过模型的 agent 也跟随新 default。
+* `backend/app/main.py` — `lifespan` 在 governance backfill 段后 best-effort
+  跑一次 `propagate_tenant_default_all_tenants`,失败仅 `logger.warning` 不阻断 startup。
+* `frontend/src/components/UI/{EmptyState,LoadingState,ErrorBanner,PageHeader,ThemeToggle}.tsx`
+  + `frontend/src/components/UI/index.ts` barrel — 统一 loading/empty/error 体验,
+  使用 CSS 变量(`var(--bg-elevated)`/`var(--text-secondary)`)自动适配 light/dark。
+* `frontend/src/hooks/useTheme.ts` — `{theme, toggle, setTheme}` + 跨标签 `storage` 同步,
+  持久化到 `localStorage.theme`。
+
+### Changed
+
+* `frontend/src/pages/SkillMarket.tsx` / `MetricsDashboard.tsx` /
+  `DeliveryReviewCenter.tsx` / `OfficialTemplates.tsx` / `AssetBrowser.tsx` —
+  临时 `setSuccessMsg/setError` 替换为 `useToast()`;loading/empty/error 改用正式组件;
+  卡片背景改 CSS 变量,支持深色模式。
+* `frontend/src/pages/AssetBrowser.tsx` — **关键修复**:移除第 57-77 行硬编码
+  `fetch('/api/ao/workflows/...')`(API 不存在),改走 `deliveryReviewApi.listRounds`,
+  404/失败 → `.catch(() => [])` 优雅降级,EmptyState 引导用户。
+* `frontend/src/pages/Layout.tsx` — 本地硬编码 `/api` 的 `fetchJson` 替换为从
+  `services/api` 导入的统一封装;顶部栏接入 `<ThemeToggle />` 切换深浅模式;
+  移除本地 theme state,改用 `useTheme()` hook(单数据源 + 跨标签同步)。
+
+### Tests
+
+* `backend/tests/test_default_model_propagation.py` — 6 个 pytest-asyncio case:
+  no-default / unassigned backfill / 已有值不动 / soft-deleted 跳过 /
+  default model 失效 / 全 tenant 聚合。全 pass。
+
 ## [Unreleased] — P7 Hardening
+
+### Fixed
+
+* `backend/alembic/versions/202607275000_add_delivery_review_and_human_queue.py` —
+  renamed revision id from `add_delivery_review_and_human_queue` (35 chars,
+  longer than `alembic_version.version_num VARCHAR(32)`) to `add_delivery_review`
+  (19 chars) so `alembic upgrade head` can stamp it.
+* `backend/alembic/versions/202607275000_add_delivery_review_and_human_queue.py` +
+  `backend/app/models/delivery_review.py` — `workflow_delivery_approvals.workflow_id`
+  and `workflow_human_reviews.workflow_id` foreign keys now reference
+  `project_workflows.id` instead of the reserved `workflow_runs` table.
+* `backend/app/main.py` — official workflow template seeder iterates over
+  existing tenants (was a single global tenant_id=NULL seed that violated
+  the NOT NULL constraint).
 
 ### Added
 
