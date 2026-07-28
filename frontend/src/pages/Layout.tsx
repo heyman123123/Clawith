@@ -4,9 +4,11 @@ import { Outlet, NavLink, useNavigate, useMatch, useLocation } from 'react-route
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
-import { agentApi, tenantApi, authApi, onboardingApi } from '../services/api';
+import { agentApi, tenantApi, authApi, onboardingApi, fetchJson } from '../services/api';
 import { useGroupUnread } from '../hooks/useGroupUnread';
 import { useToast } from '../components/Toast/ToastProvider';
+import { useTheme } from '../hooks/useTheme';
+import { ThemeToggle } from '../components/UI';
 
 import {
     IconHome,
@@ -65,12 +67,7 @@ function resolveUiLangCode(lang: string | undefined): string {
     return 'en';
 }
 
-const fetchJson = async <T,>(url: string): Promise<T> => {
-    const token = localStorage.getItem('token');
-    const res = await fetch(`/api${url}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-    if (!res.ok) return [] as T;
-    return res.json();
-};
+// Local fetchJson replaced by the unified one from services/api (see imports above).
 
 /* Compute display badge status for an agent */
 const getAgentBadgeStatus = (agent: any): string | null => {
@@ -605,17 +602,8 @@ export default function Layout() {
         }
     };
 
-    // Theme
-    const [theme, setTheme] = useState<'dark' | 'light'>(() => {
-        return (localStorage.getItem('theme') as 'dark' | 'light') || 'light';
-    });
-
-    useEffect(() => {
-        document.documentElement.setAttribute('data-theme', theme);
-        localStorage.setItem('theme', theme);
-    }, [theme]);
-
-    const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+    // Theme — delegated to useTheme hook (single source of truth across tabs).
+    const { theme, toggle: toggleTheme } = useTheme();
 
     // Sidebar collapse state
     const isSidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
@@ -1150,11 +1138,7 @@ export default function Layout() {
                         <div className="sidebar-footer-controls" style={{
                             display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px', width: '100%',
                         }}>
-                            <button className="btn btn-ghost" onClick={toggleTheme} style={{
-                                padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }} title={theme === 'dark' ? t('common.lightMode') : t('common.darkMode')}>
-                                {theme === 'dark' ? SidebarIcons.sun : SidebarIcons.moon}
-                            </button>
+                            <ThemeToggle onClick={toggleTheme} />
                             <button className="btn btn-ghost" onClick={() => setShowNotifications(v => !v)} style={{
                                 padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative',
                             }} title={isChinese ? '通知' : 'Notifications'}>

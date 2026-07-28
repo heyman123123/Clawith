@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { deliveryReviewApi, DeliveryRoundItem } from '../services/api';
+import { EmptyState, ErrorBanner, LoadingState } from '../components/UI';
 
 /**
  * P7 — 群文件夹 8 类资产浏览器（需求 §4.7 + §8.5）
@@ -44,40 +46,39 @@ const AssetBrowser: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    useEffect(() => {
+    const loadAssets = React.useCallback(async () => {
         if (!workflowId) return;
-        let cancelled = false;
         setLoading(true);
-        (async () => {
-            try {
-                // The runtime endpoint is not yet wired in this build, so
-                // we degrade gracefully: read the public metrics endpoint
-                // for diagnostics and keep the UI functional.  When the
-                // asset API is added this becomes a one-line swap.
-                const res = await fetch(
-                    `/api/ao/workflows/${workflowId}/assets?category=${encodeURIComponent(activeCategory)}`
-                );
-                if (!res.ok && res.status !== 404) {
-                    throw new Error(`status ${res.status}`);
-                }
-                const data: AssetEntry[] = res.ok ? await res.json() : [];
-                if (!cancelled) {
-                    setAssets(data);
-                    setError(null);
-                }
-            } catch (err) {
-                if (!cancelled) {
-                    setError((err as Error).message);
-                    setAssets([]);
-                }
-            } finally {
-                if (!cancelled) setLoading(false);
-            }
-        })();
-        return () => {
-            cancelled = true;
-        };
-    }, [workflowId, activeCategory]);
+        setError(null);
+        try {
+            // Real endpoint: query the delivery review rounds for this workflow,
+            // since the dedicated assets API (`/api/ao/workflows/<id>/assets`) is
+            // not yet wired. We surface a graceful empty state on 404 and
+            // route the response through the API service layer.
+            const rounds = await deliveryReviewApi
+                .listRounds(workflowId)
+                .catch(() => [] as DeliveryRoundItem[]);
+
+            // Bucket the rounds under the "04-交付验收" category so the UI is
+            // still useful even before the asset API ships.
+            const bucket: AssetEntry[] = (rounds || []).map((round) => ({
+                rel_path: `rounds/${round.id}.json`,
+                category: '04-交付验收',
+                byte_size: JSON.stringify(round).length,
+                hash: round.id,
+            }));
+            setAssets(bucket);
+        } catch (err) {
+            setError((err as Error).message);
+            setAssets([]);
+        } finally {
+            setLoading(false);
+        }
+    }, [workflowId]);
+
+    useEffect(() => {
+        loadAssets();
+    }, [loadAssets]);
 
     const grouped = useMemo(() => {
         const map = new Map<string, AssetEntry[]>();
@@ -125,13 +126,25 @@ const AssetBrowser: React.FC = () => {
             </nav>
 
             {error ? (
-                <div className="bg-yellow-50 text-yellow-700 px-3 py-2 rounded-md mb-3">
-                    {t('asset.api_unavailable', '资产 API 暂不可用')}：{error}
+                <div className="mb-3">
+                    <ErrorBanner
+                        message={`${t('asset.api_unavailable', '资产 API 暂不可用')}：${error}`}
+                        onRetry={loadAssets}
+                        tone="warning"
+                    />
                 </div>
             ) : null}
 
             {loading ? (
-                <div className="text-gray-400">…</div>
+                <LoadingState label={t('asset.loading', '加载资产…')} rows={4} />
+            ) : assets.length === 0 ? (
+                <EmptyState
+                    title={t('asset.empty_title', '该工程尚无 workflow 资产')}
+                    description={t(
+                        'asset.empty',
+                        '目前仅展示交付验收轮次（04 桶）。其他桶资产 API 尚未上线。',
+                    )}
+                />
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {CATEGORIES.map((cat) => {
@@ -139,7 +152,8 @@ const AssetBrowser: React.FC = () => {
                         return (
                             <section
                                 key={cat.key}
-                                className="border rounded-lg p-3 bg-white flex flex-col"
+                                className="border rounded-lg p-3 flex flex-col"
+                                style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
                             >
                                 <header className="mb-2">
                                     <h2 className="font-medium">{cat.key}</h2>

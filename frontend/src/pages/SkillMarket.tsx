@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchJson } from '../services/api';
+import { useToast } from '../components/Toast/ToastProvider';
+import { EmptyState, ErrorBanner, LoadingState } from '../components/UI';
 
 interface Listing {
   listing_id: string;
@@ -39,6 +41,7 @@ void (null as unknown as SandboxHookHandle); // type placeholder retained for cl
 
 const SkillMarket: React.FC = () => {
   const { t } = useTranslation();
+  const toast = useToast();
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +53,6 @@ const SkillMarket: React.FC = () => {
   const [sandboxError, setSandboxError] = useState<string | null>(null);
   const [sandboxResult, setSandboxResult] = useState<SandboxRun | null>(null);
   const [approvalNote, setApprovalNote] = useState('');
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   async function fetchListings() {
     setLoading(true);
@@ -90,7 +92,9 @@ const SkillMarket: React.FC = () => {
 
   async function openApproval(listingId: string) {
     if (!sandboxResult) {
-      setSandboxError(t('skill.run_sandbox_first', '请先跑通沙箱再申请审批'));
+      const msg = t('skill.run_sandbox_first', '请先跑通沙箱再申请审批');
+      setSandboxError(msg);
+      toast.warning(msg);
       return;
     }
     try {
@@ -102,11 +106,12 @@ const SkillMarket: React.FC = () => {
           kind: 'high_risk_publish',
         }),
       });
-      setSuccessMsg(t('skill.approval_opened', '审批请求已提交'));
+      toast.success(t('skill.approval_opened', '审批请求已提交'));
       setApprovalNote('');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'failed';
       setSandboxError(msg);
+      toast.error(msg);
     }
   }
 
@@ -114,10 +119,11 @@ const SkillMarket: React.FC = () => {
     try {
       await fetchJson(`/skill-market/${listingId}/disable`, { method: 'POST' });
       await fetchListings();
-      setSuccessMsg(t('skill.disabled', '已下架'));
+      toast.success(t('skill.disabled', '已下架'));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'failed';
       setError(msg);
+      toast.error(msg);
     }
   }
 
@@ -125,10 +131,11 @@ const SkillMarket: React.FC = () => {
     try {
       await fetchJson(`/skill-market/${listingId}/publish`, { method: 'POST' });
       await fetchListings();
-      setSuccessMsg(t('skill.published', '已上架'));
+      toast.success(t('skill.published', '已上架'));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'failed';
       setError(msg);
+      toast.error(msg);
     }
   }
 
@@ -140,21 +147,30 @@ const SkillMarket: React.FC = () => {
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <h1 className="text-2xl font-bold mb-4">{t('skill.market_title', '技能市场')}</h1>
-      {error && <div className="mb-3 px-3 py-2 bg-red-100 text-red-700 rounded">{error}</div>}
-      {successMsg && (
-        <div className="mb-3 px-3 py-2 bg-green-100 text-green-700 rounded">{successMsg}</div>
+      {error && (
+        <div className="mb-3">
+          <ErrorBanner
+            message={error}
+            onRetry={fetchListings}
+            tone="error"
+          />
+        </div>
       )}
       {loading ? (
-        <div>{t('skill.loading', '加载中…')}</div>
+        <LoadingState label={t('skill.loading', '加载中…')} rows={4} />
       ) : (
         <div className="grid gap-3">
           {listings.length === 0 && (
-            <div className="text-gray-500">{t('skill.empty', '还没有上架的技能')}</div>
+            <EmptyState
+              title={t('skill.empty_title', '技能市场为空')}
+              description={t('skill.empty', '还没有上架的技能')}
+            />
           )}
           {listings.map((listing) => (
             <article
               key={listing.listing_id}
-              className="border border-gray-200 bg-white rounded p-4"
+              className="border border-gray-200 rounded p-4"
+              style={{ background: 'var(--bg-elevated)' }}
             >
               <header className="flex justify-between items-start gap-4">
                 <div>
@@ -254,7 +270,10 @@ const SkillMarket: React.FC = () => {
                     </button>
                   </div>
                   {sandboxError && (
-                    <div className="text-sm text-red-600">{sandboxError}</div>
+                    <ErrorBanner
+                      message={sandboxError}
+                      tone="error"
+                    />
                   )}
                   {sandboxResult && (
                     <div className="border border-gray-200 rounded p-3 text-xs space-y-1 bg-gray-50">

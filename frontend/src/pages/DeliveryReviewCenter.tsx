@@ -7,6 +7,8 @@ import {
     DeliveryRoundItem,
     HumanReviewItem,
 } from '../services/api';
+import { useToast } from '../components/Toast/ToastProvider';
+import { EmptyState, ErrorBanner } from '../components/UI';
 
 /**
  * P3 + P7 — 交付验收中心
@@ -17,6 +19,7 @@ import {
  */
 const DeliveryReviewCenter: React.FC = () => {
     const { t } = useTranslation();
+    const toast = useToast();
     const params = useParams<{ workflowId?: string }>();
     const workflowId = params.workflowId || '';
 
@@ -37,6 +40,7 @@ const DeliveryReviewCenter: React.FC = () => {
             ]);
             setRounds(r);
             setReviews(h);
+            setError(null);
         } catch (err) {
             setError((err as Error).message);
         }
@@ -57,9 +61,12 @@ const DeliveryReviewCenter: React.FC = () => {
                 quality_notes: notes,
                 coverage_notes: notes,
             });
+            toast.success(t('delivery.submitted', '已提交验收轮次'));
             await load();
         } catch (err) {
-            setError((err as Error).message);
+            const msg = (err as Error).message;
+            setError(msg);
+            toast.error(msg);
         } finally {
             setSubmitting(false);
         }
@@ -68,9 +75,16 @@ const DeliveryReviewCenter: React.FC = () => {
     const resolveReview = async (id: string, decision: 'approved' | 'rejected') => {
         try {
             await humanReviewApi.resolve(id, { decision, notes: '' });
+            toast.success(
+                decision === 'approved'
+                    ? t('delivery.approved', '已批准')
+                    : t('delivery.rejected', '已驳回'),
+            );
             await load();
         } catch (err) {
-            setError((err as Error).message);
+            const msg = (err as Error).message;
+            setError(msg);
+            toast.error(msg);
         }
     };
 
@@ -87,10 +101,16 @@ const DeliveryReviewCenter: React.FC = () => {
             </header>
 
             {error ? (
-                <div className="bg-red-50 text-red-700 px-3 py-2 rounded-md mb-3">{error}</div>
+                <div className="mb-3">
+                    <ErrorBanner
+                        message={error}
+                        onRetry={load}
+                        tone="error"
+                    />
+                </div>
             ) : null}
 
-            <section className="border rounded-lg p-4 mb-6 bg-white">
+            <section className="border rounded-lg p-4 mb-6" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
                 <h2 className="text-lg font-medium mb-3">{t('delivery.submit_round', '提交一轮验收')}</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <label className="flex flex-col gap-1">
@@ -140,12 +160,13 @@ const DeliveryReviewCenter: React.FC = () => {
             </section>
 
             <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="border rounded-lg p-4 bg-white">
+                <div className="border rounded-lg p-4" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
                     <h2 className="text-lg font-medium mb-3">{t('delivery.rounds', '历史轮次')}</h2>
                     {rounds.length === 0 ? (
-                        <div className="text-gray-400 text-sm">
-                            {t('delivery.empty', '暂无验收记录')}
-                        </div>
+                        <EmptyState
+                            title={t('delivery.empty_title', '尚无验收记录')}
+                            description={t('delivery.empty', '暂无验收记录')}
+                        />
                     ) : (
                         <table className="w-full text-sm">
                             <thead>
@@ -184,12 +205,15 @@ const DeliveryReviewCenter: React.FC = () => {
                     )}
                 </div>
 
-                <div className="border rounded-lg p-4 bg-white">
+                <div className="border rounded-lg p-4" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
                     <h2 className="text-lg font-medium mb-3">
                         {t('delivery.reviews', '人审队列 (审批卡 / 决策卡 / 高危技能审核 / 质检异常)')}
                     </h2>
                     {reviews.length === 0 ? (
-                        <div className="text-gray-400 text-sm">{t('delivery.reviews_empty', '队列为空')}</div>
+                        <EmptyState
+                            title={t('delivery.reviews_empty_title', '队列为空')}
+                            description={t('delivery.reviews_empty', '队列为空')}
+                        />
                     ) : (
                         <ul className="space-y-3">
                             {reviews.map((r) => (

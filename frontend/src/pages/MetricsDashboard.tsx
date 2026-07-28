@@ -5,6 +5,8 @@ import {
   Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { fetchJson } from '../services/api';
+import { useToast } from '../components/Toast/ToastProvider';
+import { ErrorBanner, LoadingState } from '../components/UI';
 
 interface DashboardPayload {
   dates: string[];
@@ -49,20 +51,24 @@ const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'
 
 const MetricsDashboard: React.FC = () => {
   const { t } = useTranslation();
+  const toast = useToast();
   const [payload, setPayload] = useState<DashboardPayload | null>(null);
   const [days, setDays] = useState(14);
   const [backfilling, setBackfilling] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   async function fetchDashboard() {
+    setLoading(true);
+    setError(null);
     try {
       const data = await fetchJson<DashboardPayload>(`/workflow-metrics/dashboard?days=${days}`);
       setPayload(data);
-      setError(null);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'failed to load';
       setError(msg);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -265,17 +271,17 @@ const MetricsDashboard: React.FC = () => {
   async function triggerBackfill() {
     setBackfilling(true);
     setError(null);
-    setSuccessMsg(null);
     try {
       const data = await fetchJson<{ tenants_processed?: number }>(
         '/workflow-metrics/cron/trigger',
         { method: 'POST' },
       );
-      setSuccessMsg(t('metrics.backfill_ok', `已回填 ${data?.tenants_processed ?? 0} 租户`));
+      toast.success(t('metrics.backfill_ok', `已回填 ${data?.tenants_processed ?? 0} 租户`));
       await fetchDashboard();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'failed';
       setError(msg);
+      toast.error(msg);
     } finally {
       setBackfilling(false);
     }
@@ -309,21 +315,24 @@ const MetricsDashboard: React.FC = () => {
       </div>
 
       {error && (
-        <div className="mb-3 px-3 py-2 bg-red-100 text-red-700 rounded">
-          {error}
-        </div>
-      )}
-      {successMsg && (
-        <div className="mb-3 px-3 py-2 bg-green-100 text-green-700 rounded">
-          {successMsg}
+        <div className="mb-3">
+          <ErrorBanner
+            message={error}
+            onRetry={fetchDashboard}
+            tone="error"
+          />
         </div>
       )}
 
+      {loading && !payload ? (
+        <LoadingState label={t('metrics.loading', '加载指标…')} rows={5} />
+      ) : (
       <div className="grid gap-4">
         {levels.map((level, idx) => (
           <section
             key={level.title}
-            className="bg-white rounded-xl shadow-sm border border-gray-200 p-4"
+            className="rounded-xl shadow-sm border p-4"
+            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
           >
             <header className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold">
@@ -336,9 +345,10 @@ const MetricsDashboard: React.FC = () => {
               {level.cards.map((card) => (
                 <div
                   key={card.title}
-                  className="border border-gray-100 rounded p-3 bg-gray-50"
+                  className="border rounded p-3"
+                  style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-tertiary)' }}
                 >
-                  <div className="text-xs text-gray-500">{card.title}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{card.title}</div>
                   <div className="text-xl font-semibold">{card.value}</div>
                   {card.delta !== 0 && (
                     <div
@@ -356,6 +366,7 @@ const MetricsDashboard: React.FC = () => {
           </section>
         ))}
       </div>
+      )}
     </div>
   );
 };

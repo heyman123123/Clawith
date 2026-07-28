@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { officialTemplatesApi, OfficialTemplateItem } from '../services/api';
+import { EmptyState, ErrorBanner, LoadingState } from '../components/UI';
 
 /**
  * P7 模板库 — 渲染 30 个官方模板，HR/项目调度可以快速选用。
@@ -16,25 +17,22 @@ const OfficialTemplates: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        let cancelled = false;
-        (async () => {
-            try {
-                const data = await officialTemplatesApi.list();
-                if (!cancelled) {
-                    setTemplates(data);
-                    setError(null);
-                }
-            } catch (err) {
-                if (!cancelled) setError((err as Error).message || 'load failed');
-            } finally {
-                if (!cancelled) setLoading(false);
-            }
-        })();
-        return () => {
-            cancelled = true;
-        };
+    const fetchTemplates = React.useCallback(async () => {
+        setLoading(true);
+        try {
+            const data = await officialTemplatesApi.list();
+            setTemplates(data);
+            setError(null);
+        } catch (err) {
+            setError((err as Error).message || 'load failed');
+        } finally {
+            setLoading(false);
+        }
     }, []);
+
+    useEffect(() => {
+        fetchTemplates();
+    }, [fetchTemplates]);
 
     const allTags = useMemo(() => {
         const set = new Set<string>();
@@ -108,15 +106,25 @@ const OfficialTemplates: React.FC = () => {
             </div>
 
             {loading ? (
-                <div className="text-gray-400">…</div>
+                <LoadingState label={t('templates.loading', '加载模板…')} rows={6} />
             ) : error ? (
-                <div className="bg-red-50 text-red-700 px-4 py-2 rounded-md">{error}</div>
+                <ErrorBanner
+                    message={error}
+                    onRetry={fetchTemplates}
+                    tone="error"
+                />
+            ) : filtered.length === 0 ? (
+                <EmptyState
+                    title={t('templates.empty_title', '没有匹配的模板')}
+                    description={t('templates.empty', '没有匹配的模板')}
+                />
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {filtered.map((tpl) => (
                         <article
                             key={tpl.slug}
-                            className="border rounded-lg p-4 bg-white shadow-sm flex flex-col gap-2"
+                            className="border rounded-lg p-4 shadow-sm flex flex-col gap-2"
+                            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
                         >
                             <header className="flex items-center justify-between">
                                 <h2 className="text-lg font-medium">{tpl.title}</h2>
@@ -139,11 +147,6 @@ const OfficialTemplates: React.FC = () => {
                             </div>
                         </article>
                     ))}
-                    {filtered.length === 0 ? (
-                        <div className="text-gray-400 col-span-full text-center py-12">
-                            {t('templates.empty', '没有匹配的模板')}
-                        </div>
-                    ) : null}
                 </div>
             )}
         </div>
