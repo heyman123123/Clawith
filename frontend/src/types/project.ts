@@ -78,6 +78,7 @@ export interface ProjectWorkflow {
     group_leader_agent_id: string | null;
     failure_reason: string | null;
     created_at: string;
+    kickoff_sent_at: string | null;
     members: ProjectWorkflowMember[];
 }
 

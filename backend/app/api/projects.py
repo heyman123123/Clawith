@@ -115,6 +115,7 @@ class ProjectOut(BaseModel):
     group_leader_agent_id: uuid.UUID | None
     failure_reason: str | None
     created_at: datetime
+    kickoff_sent_at: datetime | None = None
     members: list[ProjectMemberOut] = Field(default_factory=list)
 
 
@@ -285,6 +286,7 @@ async def _project_out(db: AsyncSession, workflow: ProjectWorkflow) -> ProjectOu
         group_leader_agent_id=workflow.group_leader_agent_id,
         failure_reason=workflow.failure_reason,
         created_at=workflow.created_at,
+        kickoff_sent_at=workflow.kickoff_sent_at,
         members=members,
     )
 
