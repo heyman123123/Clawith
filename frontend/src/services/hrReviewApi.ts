@@ -39,9 +39,16 @@ export const hrReviewApi = {
             .then(toHrTeamPlanSession)
             .catch(() => null),
 
-    selectProposal: (sessionId: string, proposalId: string) =>
+    selectProposal: (
+        sessionId: string,
+        proposalId: string,
+        options?: { send_kickoff?: boolean },
+    ) =>
         fetchJson<TeamPlanSelection>(`/hr-review/sessions/${sessionId}/select`, {
             method: 'POST',
-            body: JSON.stringify({ proposal_id: proposalId }),
+            body: JSON.stringify({
+                proposal_id: proposalId,
+                send_kickoff: options?.send_kickoff ?? true,
+            }),
         }),
 };

@@ -1,5 +1,12 @@
 import { fetchJson } from './api';
-import type { HrTeamPlanSession, ProjectWorkflow, ShareholderGroup, TeamPlan } from '../types/project';
+import type {
+    HrTeamPlanSession,
+    KickoffDraft,
+    KickoffSendResult,
+    ProjectWorkflow,
+    ShareholderGroup,
+    TeamPlan,
+} from '../types/project';
 
 export const projectApi = {
     buildTeamPlan: (data: { name: string; requirements: string }) =>
@@ -8,6 +15,16 @@ export const projectApi = {
         fetchJson<ProjectWorkflow>('/projects', { method: 'POST', body: JSON.stringify(data) }),
     provision: (workflowId: string) =>
         fetchJson<ProjectWorkflow>(`/projects/${workflowId}/provision`, { method: 'POST' }),
+    kickoffDraft: (workflowId: string, data?: { instructions?: string }) =>
+        fetchJson<KickoffDraft>(`/projects/${workflowId}/kickoff/draft`, {
+            method: 'POST',
+            body: JSON.stringify(data ?? {}),
+        }),
+    kickoffSend: (workflowId: string, content: string) =>
+        fetchJson<KickoffSendResult>(`/projects/${workflowId}/kickoff/send`, {
+            method: 'POST',
+            body: JSON.stringify({ content }),
+        }),
     ensureDecisionGroup: (workflowId: string) =>
         fetchJson<ProjectWorkflow>(`/projects/${workflowId}/decision-group`, { method: 'POST' }),
     shareholderGroup: () => fetchJson<ShareholderGroup | null>('/projects/shareholder-group'),

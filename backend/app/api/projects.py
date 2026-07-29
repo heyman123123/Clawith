@@ -55,6 +55,11 @@ from app.services.project_provisioning import (
     provision_team_from_plan,
     sync_shareholder_group_with_project_leader,
 )
+from app.services.project_kickoff_service import (
+    ProjectKickoffError,
+    draft_kickoff_message,
+    send_kickoff_message,
+)
 
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -117,6 +122,29 @@ class ProjectOut(BaseModel):
     created_at: datetime
     kickoff_sent_at: datetime | None = None
     members: list[ProjectMemberOut] = Field(default_factory=list)
+
+
+class KickoffDraftIn(BaseModel):
+    instructions: str | None = Field(default=None, max_length=2000)
+
+
+class KickoffDraftOut(BaseModel):
+    content: str
+    leader_participant_id: uuid.UUID
+    leader_name: str
+    group_id: uuid.UUID
+    session_id: uuid.UUID
+
+
+class KickoffSendIn(BaseModel):
+    content: str = Field(min_length=1, max_length=12_000)
+
+
+class KickoffSendOut(BaseModel):
+    group_id: uuid.UUID
+    session_id: uuid.UUID
+    message_id: uuid.UUID | None = None
+    already_sent: bool = False
 
 
 class ProjectTaskOut(BaseModel):
@@ -653,6 +681,49 @@ async def dispatch_shareholder_decision(
         dispatch_ids.append(str(dispatch.id))
     await db.flush()
     return {"status": "dispatched", "dispatch_ids": dispatch_ids}
+
+
+@router.post("/{workflow_id}/kickoff/draft", response_model=KickoffDraftOut)
+async def kickoff_draft(
+    workflow_id: uuid.UUID,
+    body: KickoffDraftIn | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> KickoffDraftOut:
+    tenant_id = _tenant_id(current_user)
+    payload = body or KickoffDraftIn()
+    try:
+        result = await draft_kickoff_message(
+            db,
+            workflow_id=workflow_id,
+            tenant_id=tenant_id,
+            user_id=current_user.id,
+            instructions=payload.instructions,
+        )
+    except ProjectKickoffError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return KickoffDraftOut(**result)
+
+
+@router.post("/{workflow_id}/kickoff/send", response_model=KickoffSendOut)
+async def kickoff_send(
+    workflow_id: uuid.UUID,
+    body: KickoffSendIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> KickoffSendOut:
+    tenant_id = _tenant_id(current_user)
+    try:
+        result = await send_kickoff_message(
+            db,
+            workflow_id=workflow_id,
+            tenant_id=tenant_id,
+            user=current_user,
+            content=body.content,
+        )
+    except ProjectKickoffError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return KickoffSendOut(**result)
 
 
 @router.post("/{workflow_id}/provision", response_model=ProjectOut)

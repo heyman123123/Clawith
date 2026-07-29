@@ -36,6 +36,7 @@ export interface TeamPlan {
 export interface TeamPlanProposal {
     id: string;
     label: string;
+    card_summary?: string;
     roles: ProjectTeamRole[];
 }
 
@@ -86,4 +87,19 @@ export interface ShareholderGroup {
     group_id: string;
     name: string;
     created_at: string;
+}
+
+export interface KickoffDraft {
+    content: string;
+    leader_participant_id: string;
+    leader_name: string;
+    group_id: string;
+    session_id: string;
+}
+
+export interface KickoffSendResult {
+    group_id: string;
+    session_id: string;
+    message_id: string | null;
+    already_sent: boolean;
 }
