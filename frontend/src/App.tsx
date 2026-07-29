@@ -24,6 +24,7 @@ const MetricsDashboard = lazy(() => import('./pages/MetricsDashboard'));
 const OfficialTemplates = lazy(() => import('./pages/OfficialTemplates'));
 const DeliveryReviewCenter = lazy(() => import('./pages/DeliveryReviewCenter'));
 const AssetBrowser = lazy(() => import('./pages/AssetBrowser'));
+const RoleGrowthCenter = lazy(() => import('./pages/RoleGrowthCenter'));
 const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
 const SSOEntry = lazy(() => import('./pages/SSOEntry'));
 const OKR = lazy(() => import('./pages/OKR'));
@@ -313,6 +314,7 @@ export default function App() {
                     <Route path="delivery-review" element={<DeliveryReviewCenter />} />
                     <Route path="delivery-review/:workflowId" element={<DeliveryReviewCenter />} />
                     <Route path="assets/:workflowId" element={<AssetBrowser />} />
+                    <Route path="role-growth" element={<RoleGrowthCenter />} />
                 </Route>
             </Routes>
             </Suspense>

@@ -2937,6 +2937,28 @@ async def execute_tool(
         content = arguments.get("content", "")
         return content if isinstance(content, str) else str(content)
 
+    # ── AO / quality / delivery tools (需求 §4.1) ──
+    from app.services.ao.agent_tool_bridge import (
+        AO_TOOL_NAMES,
+        format_ao_tool_result,
+        invoke_ao_tool,
+    )
+
+    if tool_name in AO_TOOL_NAMES:
+        from app.services.ao.scheduler_tools import publish_enqueued_group_message_after_commit
+
+        async with async_session() as _ao_db:
+            payload = await invoke_ao_tool(
+                tool_name,
+                arguments if isinstance(arguments, dict) else {},
+                agent_id=agent_id,
+                db=_ao_db,
+            )
+            await _ao_db.commit()
+        # Realtime notifies durable state only — never an uncommitted preview.
+        await publish_enqueued_group_message_after_commit(payload)
+        return format_ao_tool_result(payload)
+
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
     ws = _agent_workspace_root(agent_id)

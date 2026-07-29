@@ -74,14 +74,15 @@ def test_compute_final_score_clamps_none_inputs():
     assert result.passed is False
 
 
-def test_new_round_no_increments_and_caps():
+def test_new_round_no_increments_without_capping():
     from app.services.delivery_scoring import MAX_ROUNDS, new_round_no
 
     assert new_round_no(None) == 1
     assert new_round_no(1) == 2
     assert new_round_no(2) == 3
-    assert new_round_no(3) == 3
-    assert new_round_no(MAX_ROUNDS) == MAX_ROUNDS
+    # Past the max: callers (API) must 409 — do NOT silently reuse round 3.
+    assert new_round_no(3) == 4
+    assert new_round_no(MAX_ROUNDS) == MAX_ROUNDS + 1
 
 
 def test_attempt_label_render():
@@ -284,12 +285,13 @@ def test_enumerate_audit_categories_dedupes_preserves_order():
 
 @pytest.mark.asyncio
 async def test_delivery_round_escalates_to_shareholder_on_three_failures(monkeypatch):
-    """Submit 3 failing rounds, confirm a shareholder review is opened."""
+    """Round 3 failure opens shareholder review; a 4th attempt returns 409."""
+
+    from fastapi import HTTPException
 
     from app.api import delivery_review as dr
     from app.services.delivery_scoring import MAX_ROUNDS
 
-    # Stub AsyncSession.execute / scalars to return empty (no prior rows)
     class _StubScalars:
         def __init__(self, rows):
             self._rows = rows
@@ -305,12 +307,13 @@ async def test_delivery_round_escalates_to_shareholder_on_three_failures(monkeyp
             return _StubScalars(self._rows)
 
     class _StubSession:
-        def __init__(self):
+        def __init__(self, prior_rows=None):
             self.added: list[Any] = []
             self.commits = 0
+            self._prior = list(prior_rows or [])
 
         async def execute(self, _stmt):
-            return _StubResult([])
+            return _StubResult(self._prior)
 
         def add(self, row):
             self.added.append(row)
@@ -325,7 +328,6 @@ async def test_delivery_round_escalates_to_shareholder_on_three_failures(monkeyp
         id = uuid.uuid4()
         tenant_id = uuid.uuid4()
 
-    session = _StubSession()
     body = dr.DeliveryRoundIn(
         quality_score=10.0,
         coverage_score=10.0,
@@ -333,6 +335,9 @@ async def test_delivery_round_escalates_to_shareholder_on_three_failures(monkeyp
         quality_notes="no tests",
         rectification_items=[{"kind": "coverage", "summary": "missing X"}],
     )
+
+    # Round 1 — reject, no escalation
+    session = _StubSession()
     response = await dr.submit_delivery_round(
         workflow_id=uuid.uuid4(),
         body=body,
@@ -340,34 +345,34 @@ async def test_delivery_round_escalates_to_shareholder_on_three_failures(monkeyp
         db=session,  # type: ignore[arg-type]
     )
     assert response["decision"] == "rejected"
-    # First round → no escalation
     assert not any(
         getattr(row, "kind", None) == "shareholder_decision" for row in session.added
     )
 
-    # Now stub the second/third rounds to also reject
-    existing = SimpleNamespace(round_no=MAX_ROUNDS)  # pretend we are at max
-
-    class _ResultMax:
-        def scalars(self):
-            return _StubScalars([existing])
-
-    session2 = _StubSession()
-
-    async def _execute_max(_stmt):
-        return _ResultMax()
-
-    session2.execute = _execute_max  # type: ignore[assignment]
+    # Round 3 (previous=2) — reject + open shareholder review
+    session3 = _StubSession(prior_rows=[SimpleNamespace(round_no=MAX_ROUNDS - 1)])
     response3 = await dr.submit_delivery_round(
         workflow_id=uuid.uuid4(),
         body=body,
         current_user=_StubUser(),  # type: ignore[arg-type]
-        db=session2,  # type: ignore[arg-type]
+        db=session3,  # type: ignore[arg-type]
     )
     assert response3["decision"] == "rejected"
+    assert response3["round_no"] == MAX_ROUNDS
     assert any(
-        getattr(row, "kind", None) == "shareholder_decision" for row in session2.added
+        getattr(row, "kind", None) == "shareholder_decision" for row in session3.added
     )
+
+    # Round 4 attempt (previous=3) — hard stop
+    session4 = _StubSession(prior_rows=[SimpleNamespace(round_no=MAX_ROUNDS)])
+    with pytest.raises(HTTPException) as exc_info:
+        await dr.submit_delivery_round(
+            workflow_id=uuid.uuid4(),
+            body=body,
+            current_user=_StubUser(),  # type: ignore[arg-type]
+            db=session4,  # type: ignore[arg-type]
+        )
+    assert exc_info.value.status_code == 409
 
 
 @pytest.mark.asyncio

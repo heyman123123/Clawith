@@ -505,14 +505,14 @@ async def test_collect_step_result_marks_quality_checking_when_quality_step_exis
         _FakeDB(),
         step_id=step.id,
         output_excerpt="artifact ready",
-        output_file="/tmp/run/01-执行/execute.md",
+        output_file="/tmp/run/01-步骤输出/execute.md",
         input_tokens=200,
         output_tokens=140,
     )
 
     assert result["status"] == "quality_checking"
     assert step.status == "quality_checking"
-    assert step.output_file == "/tmp/run/01-执行/execute.md"
+    assert step.output_file == "/tmp/run/01-步骤输出/execute.md"
 
 
 # ---------------------------------------------------------------------------

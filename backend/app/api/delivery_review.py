@@ -14,7 +14,7 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -216,7 +216,7 @@ async def submit_delivery_round(
         coverage_notes=body.coverage_notes,
         quality_notes=body.quality_notes,
         rectification_items=body.rectification_items,
-        decided_at=datetime.utcnow(),  # noqa: DTZ003
+        decided_at=datetime.now(UTC),
     )
     db.add(row)
 
@@ -364,7 +364,7 @@ async def resolve_human_review(
     row.status = body.decision
     row.decision_notes = body.notes
     row.reviewer_user_id = current_user.id
-    row.resolved_at = datetime.utcnow()  # noqa: DTZ003
+    row.resolved_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(row)
     return _serialize_human(row)

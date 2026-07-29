@@ -161,17 +161,22 @@ async def test_compose_initial_workflow_writes_yaml_with_all_required_fields(
     }
     assert parsed["concurrency"] == settings.AO_CONCURRENCY
     step_keys = [step["id"] for step in parsed["steps"]]
-    assert step_keys == ["clarify", "execute", "review"]
+    assert step_keys[0] == "clarify"
+    assert step_keys[-2] == "review"
+    assert step_keys[-1] == "deliver"
+    execute_keys = [k for k in step_keys if k.startswith("execute")]
+    assert len(execute_keys) == 2  # executor_pm + executor_dev
     assert all(step["role"] for step in parsed["steps"])
     assert all("task" in step and step["task"] for step in parsed["steps"])
     clarify = parsed["steps"][0]
     execute = parsed["steps"][1]
-    review = parsed["steps"][2]
+    review = parsed["steps"][-2]
+    deliver = parsed["steps"][-1]
     assert clarify["output"] == "plan"
     assert execute["depends_on"] == ["clarify"]
-    assert execute["output"] == "artifact"
-    assert review["depends_on"] == ["execute"]
-    assert metadata["step_count"] == 3
+    assert review["depends_on"] == execute_keys
+    assert deliver["depends_on"] == ["review"]
+    assert metadata["step_count"] == 5  # clarify + 2 exec + review + deliver
     assert metadata["yaml_text"] == yaml_path.read_text(encoding="utf-8")
 
 
@@ -279,7 +284,7 @@ async def _ensure_workflow_row(sqlite_session: AsyncSession, *, tenant_id: uuid.
     return workflow
 
 
-async def test_create_run_row_inserts_three_steps_in_dependency_order(
+async def test_create_run_row_inserts_default_steps_in_dependency_order(
     sqlite_session: AsyncSession,
 ) -> None:
     tenant_id = uuid.uuid4()
@@ -291,19 +296,22 @@ async def test_create_run_row_inserts_three_steps_in_dependency_order(
         workflow=workflow,
         yaml_text="name: x\nagents_dir: ./agents\nllm: {provider: openai, model: m}\nsteps: []\n",
         run_dir=Path("/tmp/run"),
-        agent_ids={"scheduler": scheduler_id, "executor_0": uuid.uuid4(), "quality": uuid.uuid4()},
+        agent_ids={
+            "scheduler": scheduler_id,
+            "executor_0": uuid.uuid4(),
+            "quality": uuid.uuid4(),
+            "delivery": uuid.uuid4(),
+        },
     )
 
-    assert len(rows) == 3
+    assert len(rows) == 4
     step_keys = [row.step_key for row in rows]
-    assert step_keys == ["clarify", "execute", "review"]
-    # 依赖关系：clarify 无依赖，execute depends_on clarify，review depends_on execute。
+    assert step_keys == ["clarify", "execute_default", "review", "deliver"]
     assert rows[0].depends_on == []
     assert rows[1].depends_on == ["clarify"]
-    assert rows[2].depends_on == ["execute"]
-    # 默认状态：pending。
+    assert rows[2].depends_on == ["execute_default"]
+    assert rows[3].depends_on == ["review"]
     assert all(row.status == "pending" for row in rows)
-    # 必备位 id 已绑定到对应 step。
     assert rows[0].agent_id == scheduler_id
 
 
@@ -318,7 +326,12 @@ async def test_get_run_steps_returns_steps_in_order(sqlite_session: AsyncSession
     )
 
     fetched = await get_run_steps(sqlite_session, workflow_id=workflow.id)
-    assert [row.step_key for row in fetched] == ["clarify", "execute", "review"]
+    assert [row.step_key for row in fetched] == [
+        "clarify",
+        "execute_default",
+        "review",
+        "deliver",
+    ]
 
 
 async def test_mark_run_started_sets_status_and_started_at(sqlite_session: AsyncSession) -> None:

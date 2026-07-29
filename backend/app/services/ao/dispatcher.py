@@ -218,6 +218,20 @@ async def collect_step_result(
     row.completed_at = now
     row.updated_at = now
 
+    token_totals = None
+    if input_tokens is not None or output_tokens is not None:
+        try:
+            from app.services.ao.token_audit import apply_step_token_usage
+
+            token_totals = await apply_step_token_usage(
+                db,
+                step=row,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 — audit must not poison collection
+            logger.warning("[AODispatcher] token audit failed for step {}: {}", step_id, exc)
+
     has_quality = await has_quality_step(
         db, workflow_id=row.workflow_id, step_key=row.step_key
     )

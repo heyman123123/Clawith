@@ -284,7 +284,8 @@ async def test_initial_ensure_creates_three_templates_three_agents_three_soul_fi
     assert template_names == {"workflow_scheduler", "workflow_quality", "workflow_delivery"}
     for tmpl in templates:
         assert tmpl.is_builtin is True
-        assert tmpl.soul_template and tmpl.default_skills
+        assert tmpl.soul_template
+        assert tmpl.default_skills == []
 
     assert len(agents) == 3
     agent_names = {a.name for a in agents}

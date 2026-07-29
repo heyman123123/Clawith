@@ -497,6 +497,8 @@ from app.api.onboarding import router as onboarding_router
 from app.api.projects import router as projects_router
 from app.api.hr_review import router as hr_review_router
 from app.api.ao_workflows import router as ao_workflows_router
+from app.api.ao_assets import router as ao_assets_router
+from app.api.ao_evolution import router as ao_evolution_router
 from app.api.skill_market import router as skill_market_router
 from app.api.workflow_metrics_api import router as workflow_metrics_router
 
@@ -553,6 +555,8 @@ app.include_router(agentbay_control_router, prefix=settings.API_PREFIX)
 app.include_router(okr_router)  # OKR — self-prefixed at /api/okr
 app.include_router(onboarding_router, prefix=settings.API_PREFIX)
 app.include_router(ao_workflows_router)  # AO — self-prefixed at /api/ao
+app.include_router(ao_assets_router, prefix=settings.API_PREFIX)  # AO assets
+app.include_router(ao_evolution_router, prefix=settings.API_PREFIX)  # AO evolution / growth
 app.include_router(skill_market_router, prefix=settings.API_PREFIX)  # P5
 app.include_router(workflow_metrics_router, prefix=settings.API_PREFIX)  # P6
 from app.api.delivery_review import router as delivery_review_router  # P3 + P7

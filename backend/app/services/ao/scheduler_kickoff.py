@@ -139,14 +139,31 @@ async def run_scheduler_kickoff(
         except Exception as exc:  # noqa: BLE001
             logger.exception("[SchedulerKickoff] send_channel_message failed for {}", workflow_id)
             step_results.append({"step": "send_channel_message", "ok": False, "error": str(exc)})
+            return {
+                "ok": False,
+                "workflow_id": str(workflow_id),
+                "group_id": str(group_id),
+                "scheduler_agent_id": str(leader_agent_id),
+                "steps": step_results,
+                "error": "send_channel_message failed",
+            }
 
     try:
         await run_repository.mark_run_started(db, workflow_id=workflow_id)
     except Exception as exc:  # noqa: BLE001 — DB failure should not block kickoff summary
         logger.exception("[SchedulerKickoff] mark_run_started failed for {}", workflow_id)
         step_results.append({"step": "mark_run_started", "ok": False, "error": str(exc)})
-    else:
-        step_results.append({"step": "mark_run_started", "ok": True, "result": {"status": "active"}})
+        return {
+            "ok": False,
+            "workflow_id": str(workflow_id),
+            "group_id": str(group_id),
+            "scheduler_agent_id": str(leader_agent_id),
+            "steps_count": len(plan),
+            "estimated_minutes": estimated_minutes,
+            "steps": step_results,
+            "error": "mark_run_started failed",
+        }
+    step_results.append({"step": "mark_run_started", "ok": True, "result": {"status": "active"}})
 
     return {
         "ok": True,

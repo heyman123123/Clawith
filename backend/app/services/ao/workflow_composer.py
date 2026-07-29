@@ -10,6 +10,13 @@ we still need to:
 * persist a ``workflow_run_steps`` row per DAG node so P1.4 can resume from
   any step without re-parsing the YAML.
 
+DAG shape (需求 §1.4 / gap-closure W2):
+
+* ``clarify`` (scheduler)
+* ``execute_<key>`` × N executor roles from the HR plan
+* ``review`` (quality) depends on all execute steps
+* ``deliver`` (delivery) depends on review
+
 The composer never shells out to the AO CLI (that is ``AOClient``'s job) — it
 only writes YAML text to disk. ``run_repository.create_run_row`` performs the
 side-by-side DB write.
@@ -17,10 +24,11 @@ side-by-side DB write.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from loguru import logger
@@ -37,58 +45,15 @@ if TYPE_CHECKING:
 settings = get_settings()
 
 
-# 必备位：在 Clawith 已保证存在 scheduler / quality / delivery 三个角色，
-# 这里给出 AO 默认 role_path 候选。优先级：role_description（workflow.xxx）
-# → builtin 的 role_description → 兜底 "product/product-manager"。
 SYSTEM_ROLE_PATH_HINTS: dict[str, str] = {
     "scheduler": "product/project-scheduler",
     "quality": "quality/quality-reviewer",
     "delivery": "delivery/delivery-coordinator",
 }
 
-# 兜底 role_path：AO 角色库找不到精确匹配时，调度/质控/交付位都会回落到
-# 这里，保证建群阶段不会因为缺角色而阻塞。
 _FALLBACK_ROLE_PATH = "product/product-manager"
-
-# 默认三步 DAG（clarify → execute → review）。每一步由 step_id、
-# role_path、task 模板、依赖、output_variable、acceptance_text 组成。
-# executor 的 role_path 由 ``_ao_role_path_for(agent, "executor_<i>")``
-# 在运行时决定；其他两步的 role_path 在本模块顶层写死。
-_DEFAULT_DAG_TEMPLATE: tuple[dict, ...] = (
-    {
-        "step_id": "clarify",
-        "step_order": 0,
-        "role_path": SYSTEM_ROLE_PATH_HINTS["scheduler"],
-        "agent_role_key": "scheduler",
-        "task": "把需求拆成 3~5 个执行步骤",
-        "output_variable": "plan",
-        "depends_on": [],
-        "acceptance_text": "输出包含可执行的下游任务清单",
-    },
-    {
-        # executor 的 role_path 由调用方在 ``compose_initial_workflow`` 内
-        # 依据 ``roles`` 中第一个非必备位 Agent 决定；占位符 ``<EXECUTOR_ROLE>``
-        # 在渲染时替换。depends_on 与 output 固定。
-        "step_id": "execute",
-        "step_order": 1,
-        "role_path": "<EXECUTOR_ROLE>",
-        "agent_role_key": "executor_0",
-        "task": "{{plan}}",
-        "output_variable": "artifact",
-        "depends_on": ["clarify"],
-        "acceptance_text": "产出物落盘到工作流实例目录",
-    },
-    {
-        "step_id": "review",
-        "step_order": 2,
-        "role_path": SYSTEM_ROLE_PATH_HINTS["quality"],
-        "agent_role_key": "quality",
-        "task": "对 {{artifact}} 做质检，输出 score 0~100",
-        "output_variable": "review",
-        "depends_on": ["execute"],
-        "acceptance_text": "输出包含 score 与 feedback",
-    },
-)
+_POWER_SLOT_KEYS = frozenset({"scheduler", "quality", "delivery"})
+_STEP_KEY_SAFE = re.compile(r"[^a-zA-Z0-9_-]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,20 +68,7 @@ class ComposeResult:
 
 
 def _ao_role_path_for(agent: Agent, role_key: str) -> str:
-    """Resolve an AO ``role_path`` for a Clawith Agent + ``role_key``.
-
-    Lookup order (deterministic):
-
-    1. ``SYSTEM_ROLE_PATH_HINTS[role_key]`` for the three power slots
-       (scheduler / quality / delivery).
-    2. ``agent.role_description`` if it looks like an AO path (contains a
-       slash) — useful when the role was authored with a custom AO mapping.
-    3. ``product/<role_key>`` when the role key looks human-friendly
-       (``executor_0`` → ``product/executor-0``).
-    4. ``_FALLBACK_ROLE_PATH`` to keep group provisioning unblocked.
-
-    The function never raises: a missing role must not abort HR confirmation.
-    """
+    """Resolve an AO ``role_path`` for a Clawith Agent + ``role_key``."""
     hint = SYSTEM_ROLE_PATH_HINTS.get(role_key)
     if hint:
         return hint
@@ -129,24 +81,115 @@ def _ao_role_path_for(agent: Agent, role_key: str) -> str:
     return _FALLBACK_ROLE_PATH
 
 
-def _select_executor_role(
+def _safe_step_key(raw: str, *, index: int) -> str:
+    cleaned = _STEP_KEY_SAFE.sub("-", (raw or "").strip()).strip("-").lower()
+    if not cleaned:
+        cleaned = f"executor-{index}"
+    return f"execute_{cleaned}"[:64]
+
+
+def _iter_executor_roles(
     roles: list[dict],
     *,
     agent_ids: dict[str, uuid.UUID],
-) -> tuple[str, uuid.UUID | None]:
-    """Pick the first executor Agent from ``roles`` (skip the three power slots).
+) -> list[tuple[str, str, uuid.UUID | None]]:
+    """Return ``[(step_key, role_path, agent_id|None), ...]`` for executor slots.
 
-    Falls back to (fallback role path, None) when ``roles`` is empty or every
-    role is already a power slot — keeps the YAML well-formed so downstream
-    P1.4 can still attempt execution.
+    Skips power-slot keys. Falls back to a single placeholder executor when the
+    plan has no business roles so the YAML remains kickable.
     """
-    power_slots = set(agent_ids.keys())
-    for role in roles:
+    power_slots = set(_POWER_SLOT_KEYS)
+    out: list[tuple[str, str, uuid.UUID | None]] = []
+    for index, role in enumerate(roles):
         key = str(role.get("key") or "").strip()
         if not key or key in power_slots:
             continue
-        return f"product/{key.replace('_', '-')}", None
-    return _FALLBACK_ROLE_PATH, None
+        step_key = _safe_step_key(key, index=index)
+        role_path = f"product/{key.replace('_', '-')}"
+        agent_id = agent_ids.get(key)
+        if not isinstance(agent_id, uuid.UUID):
+            agent_id = agent_ids.get(f"executor_{index}")
+            if not isinstance(agent_id, uuid.UUID):
+                agent_id = None
+        out.append((step_key, role_path, agent_id))
+    if not out:
+        out.append(("execute_default", _FALLBACK_ROLE_PATH, None))
+    return out
+
+
+def build_dag_steps(
+    roles: list[dict],
+    *,
+    agent_ids: dict[str, uuid.UUID],
+) -> list[dict[str, Any]]:
+    """Build the clarify → execute×N → review → deliver DAG step templates."""
+    executors = _iter_executor_roles(roles, agent_ids=agent_ids)
+    steps: list[dict[str, Any]] = [
+        {
+            "step_id": "clarify",
+            "step_key": "clarify",
+            "step_order": 0,
+            "role_path": SYSTEM_ROLE_PATH_HINTS["scheduler"],
+            "agent_role_key": "scheduler",
+            "task": "把需求拆成可分发给各执行角色的步骤",
+            "task_summary": "把需求拆成可分发给各执行角色的步骤",
+            "output_variable": "plan",
+            "output_var": "plan",
+            "depends_on": [],
+            "acceptance_text": "输出包含可执行的下游任务清单",
+        }
+    ]
+    execute_keys: list[str] = []
+    for index, (step_key, role_path, agent_id) in enumerate(executors):
+        execute_keys.append(step_key)
+        steps.append(
+            {
+                "step_id": step_key,
+                "step_key": step_key,
+                "step_order": 1 + index,
+                "role_path": role_path,
+                "agent_role_key": f"executor_{index}",
+                "agent_id": agent_id,
+                "task": "{{plan}}",
+                "task_summary": f"执行角色步骤 {step_key}",
+                "output_variable": f"artifact_{index}",
+                "output_var": f"artifact_{index}",
+                "depends_on": ["clarify"],
+                "acceptance_text": "产出物落盘到工作流实例目录",
+            }
+        )
+    review_order = 1 + len(executors)
+    steps.append(
+        {
+            "step_id": "review",
+            "step_key": "review",
+            "step_order": review_order,
+            "role_path": SYSTEM_ROLE_PATH_HINTS["quality"],
+            "agent_role_key": "quality",
+            "task": "对全部执行产物做质检，输出 score 0~100",
+            "task_summary": "对全部执行产物做质检，输出 score 0~100",
+            "output_variable": "review",
+            "output_var": "review",
+            "depends_on": list(execute_keys),
+            "acceptance_text": "输出包含 score 与 feedback",
+        }
+    )
+    steps.append(
+        {
+            "step_id": "deliver",
+            "step_key": "deliver",
+            "step_order": review_order + 1,
+            "role_path": SYSTEM_ROLE_PATH_HINTS["delivery"],
+            "agent_role_key": "delivery",
+            "task": "整理交付包并申请真人交付经理验收",
+            "task_summary": "整理交付包并申请真人交付经理验收",
+            "output_variable": "delivery_package",
+            "output_var": "delivery_package",
+            "depends_on": ["review"],
+            "acceptance_text": "交付包索引完整且可提交验收",
+        }
+    )
+    return steps
 
 
 def _render_yaml_text(
@@ -156,23 +199,15 @@ def _render_yaml_text(
     provider: str,
     model: str,
     concurrency: int,
-    step_role_paths: dict[str, str],
+    dag_steps: list[dict[str, Any]],
 ) -> str:
-    """Render the minimal AO YAML body Clawith consumes as the initial workflow.
-
-    The structure mirrors ``AOClient.parse_workflow`` requirements: ``name``,
-    ``agents_dir``, ``llm``, ``concurrency``, ``steps`` with mandatory ``id`` /
-    ``role`` / ``task``. ``depends_on`` and ``output_variable`` are optional
-    but emitted so P1.4 can render the run plan without re-deriving them.
-    """
+    """Render the minimal AO YAML body Clawith consumes as the initial workflow."""
     steps_payload: list[dict] = []
-    for template in _DEFAULT_DAG_TEMPLATE:
-        step_id = template["step_id"]
-        role_path = step_role_paths[step_id]
+    for template in dag_steps:
         steps_payload.append(
             {
-                "id": step_id,
-                "role": role_path,
+                "id": template["step_id"],
+                "role": template["role_path"],
                 "task": template["task"],
                 "depends_on": list(template["depends_on"]),
                 "output": template["output_variable"],
@@ -188,21 +223,6 @@ def _render_yaml_text(
     return yaml.safe_dump(body, allow_unicode=True, sort_keys=False)
 
 
-def _resolve_step_role_paths(
-    *,
-    executor_role_path: str,
-) -> dict[str, str]:
-    """Materialize ``step_id -> role_path`` for the default DAG template."""
-    return {
-        template["step_id"]: (
-            executor_role_path
-            if template["step_id"] == "execute"
-            else str(template["role_path"])
-        )
-        for template in _DEFAULT_DAG_TEMPLATE
-    }
-
-
 def _yaml_target_path(workflow_id: uuid.UUID) -> Path:
     """Return ``<AO_WORKFLOWS_DIR>/<workflow_id>.yaml``; create parent if missing."""
     base = Path(settings.AO_WORKFLOWS_DIR or "")
@@ -212,6 +232,18 @@ def _yaml_target_path(workflow_id: uuid.UUID) -> Path:
     return base / f"{workflow_id}.yaml"
 
 
+# Back-compat alias used by older tests / imports.
+def _select_executor_role(
+    roles: list[dict],
+    *,
+    agent_ids: dict[str, uuid.UUID],
+) -> tuple[str, uuid.UUID | None]:
+    executors = _iter_executor_roles(roles, agent_ids=agent_ids)
+    step_key, role_path, agent_id = executors[0]
+    del step_key
+    return role_path, agent_id
+
+
 async def compose_initial_workflow(
     db: AsyncSession,
     *,
@@ -219,60 +251,55 @@ async def compose_initial_workflow(
     agent_ids: dict[str, uuid.UUID],
     roles: list[dict],
 ) -> tuple[Path, dict]:
-    """Compose the initial AO workflow YAML + a metadata envelope for a workflow.
-
-    Parameters
-    ----------
-    db:
-        Async session, kept in the signature for forward compatibility (P1.4
-        will need it for AOAgentTemplate lookups). The current implementation
-        does not write to the DB; ``run_repository.create_run_row`` does.
-    workflow:
-        The freshly-provisioned ``ProjectWorkflow`` row whose ``id`` drives the
-        YAML filename and whose ``name`` drives the AO ``name:`` field.
-    agent_ids:
-        Mapping ``"scheduler" | "quality" | "delivery" -> Agent.id`` produced
-        by ``ensure_workflow_system_roles``. Missing keys still yield a valid
-        YAML via ``_ao_role_path_for``'s fallbacks.
-    roles:
-        The HR proposal's ``roles`` list. The first non-power-slot role drives
-        the ``execute`` step's ``role_path``; if none exist we fall back to
-        ``_FALLBACK_ROLE_PATH`` so the run is still kickable.
-
-    Returns
-    -------
-    (yaml_path, metadata)
-        ``yaml_path`` is an absolute path to a YAML file written on disk.
-        ``metadata`` contains ``yaml_text``, ``step_count`` and the executor
-        metadata needed by ``run_repository.create_run_row``.
-    """
-    del db  # currently unused; kept so P1.4 can read AOAgentTemplate mappings.
-    executor_role_path, _executor_agent_id = _select_executor_role(
-        roles, agent_ids=agent_ids
+    """Compose the initial AO workflow YAML + a metadata envelope for a workflow."""
+    del db  # reserved for AOAgentTemplate lookups.
+    dag_steps = build_dag_steps(roles, agent_ids=agent_ids)
+    executor_role_path = next(
+        (s["role_path"] for s in dag_steps if str(s["step_id"]).startswith("execute")),
+        _FALLBACK_ROLE_PATH,
     )
-    step_role_paths = _resolve_step_role_paths(executor_role_path=executor_role_path)
+    first_executor_agent = next(
+        (s.get("agent_id") for s in dag_steps if str(s["step_id"]).startswith("execute")),
+        None,
+    )
     yaml_text = _render_yaml_text(
         workflow_name=workflow.name,
         agents_dir=str(settings.AO_AGENTS_DIR or "./agency-agents-zh"),
         provider=str(settings.AO_PROVIDER or "openai"),
         model=str(settings.AO_MODEL or "clawith-gateway"),
         concurrency=int(settings.AO_CONCURRENCY),
-        step_role_paths=step_role_paths,
+        dag_steps=dag_steps,
     )
     yaml_path = _yaml_target_path(workflow.id)
     yaml_path.write_text(yaml_text, encoding="utf-8")
     metadata = {
         "yaml_text": yaml_text,
-        "step_count": len(_DEFAULT_DAG_TEMPLATE),
+        "step_count": len(dag_steps),
         "executor_role_path": executor_role_path,
-        "executor_agent_id": None,
-        "step_role_paths": step_role_paths,
+        "executor_agent_id": first_executor_agent,
+        "executor_agent_ids": [
+            str(s["agent_id"])
+            for s in dag_steps
+            if str(s["step_id"]).startswith("execute") and s.get("agent_id")
+        ],
+        "dag_steps": dag_steps,
+        "step_role_paths": {s["step_id"]: s["role_path"] for s in dag_steps},
     }
     logger.info(
-        "[AOComposer] Composed workflow {} at {} (steps={}, executor_role={})",
+        "[AOComposer] Composed workflow {} at {} (steps={}, executors={})",
         workflow.id,
         yaml_path,
         metadata["step_count"],
-        executor_role_path,
+        sum(1 for s in dag_steps if str(s["step_id"]).startswith("execute")),
     )
     return yaml_path, metadata
+
+
+__all__ = [
+    "ComposeResult",
+    "SYSTEM_ROLE_PATH_HINTS",
+    "_ao_role_path_for",
+    "_select_executor_role",
+    "build_dag_steps",
+    "compose_initial_workflow",
+]

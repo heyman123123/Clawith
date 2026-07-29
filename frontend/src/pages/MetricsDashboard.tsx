@@ -6,7 +6,7 @@ import {
 } from 'recharts';
 import { fetchJson } from '../services/api';
 import { useToast } from '../components/Toast/ToastProvider';
-import { ErrorBanner, LoadingState } from '../components/UI';
+import { ErrorBanner, LoadingState, PageHeader } from '../components/UI';
 
 interface DashboardPayload {
   dates: string[];
@@ -47,7 +47,19 @@ interface LevelBucket {
   chart?: React.ReactNode;
 }
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+const COLORS = ['#818cf8', '#22c55e', '#f59e0b', '#ef4444', '#a78bfa', '#06b6d4'];
+
+const axisProps = {
+  stroke: 'var(--text-tertiary)',
+  tick: { fill: 'var(--text-tertiary)', fontSize: 11 },
+};
+
+const tooltipStyle = {
+  background: 'var(--bg-elevated)',
+  border: '1px solid var(--border-subtle)',
+  borderRadius: 8,
+  color: 'var(--text-primary)',
+};
 
 const MetricsDashboard: React.FC = () => {
   const { t } = useTranslation();
@@ -90,36 +102,23 @@ const MetricsDashboard: React.FC = () => {
   };
 
   const last = (arr: number[]) => (latestIdx >= 0 ? arr[latestIdx] : 0);
-  const prev = (arr: number[]) =>
-    latestIdx >= 1 ? arr[latestIdx - 1] : 0;
+  const prev = (arr: number[]) => (latestIdx >= 1 ? arr[latestIdx - 1] : 0);
   const delta = (arr: number[]) => last(arr) - prev(arr);
-  const pct = (cur: number, previous: number) =>
-    previous > 0 ? ((cur - previous) / previous) * 100 : 0;
 
   const chartData = useMemo(() => {
     if (!payload) return [] as Array<Record<string, number | string>>;
     return payload.dates.map((d, idx) => ({
       date: d.slice(5),
-      ...payload.efficiency && {
-        workflows_succeeded: payload.efficiency.workflows_succeeded[idx],
-        workflows_failed: payload.efficiency.workflows_failed[idx],
-      },
-      ...payload.quality && {
-        avg_score: Number(((payload.quality.quality_score_avg[idx] || 0)).toFixed(1)),
-        approval: payload.quality.steps_delivery_approved[idx],
-      },
-      ...payload.evolution && {
-        evolve: payload.evolution.evolution_events[idx],
-        rollback: payload.evolution.evolution_rollbacks[idx],
-      },
-      ...payload.skill && {
-        learning_total: payload.skill.skill_learning_total[idx],
-        skill_blocked: payload.skill.sandbox_runs_blocked[idx],
-      },
-      ...payload.cost && {
-        tokens_in: payload.cost.tokens_input_total[idx],
-        tokens_out: payload.cost.tokens_output_total[idx],
-      },
+      workflows_succeeded: payload.efficiency.workflows_succeeded[idx],
+      workflows_failed: payload.efficiency.workflows_failed[idx],
+      avg_score: Number((payload.quality.quality_score_avg[idx] || 0).toFixed(1)),
+      approval: payload.quality.steps_delivery_approved[idx],
+      evolve: payload.evolution.evolution_events[idx],
+      rollback: payload.evolution.evolution_rollbacks[idx],
+      learning_total: payload.skill.skill_learning_total[idx],
+      skill_blocked: payload.skill.sandbox_runs_blocked[idx],
+      tokens_in: payload.cost.tokens_input_total[idx],
+      tokens_out: payload.cost.tokens_output_total[idx],
     }));
   }, [payload]);
 
@@ -164,11 +163,11 @@ const MetricsDashboard: React.FC = () => {
         chart: (
           <ResponsiveContainer width="100%" height={140}>
             <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+              <XAxis dataKey="date" {...axisProps} />
+              <YAxis {...axisProps} />
+              <Tooltip contentStyle={tooltipStyle} />
+              <Legend wrapperStyle={{ color: 'var(--text-secondary)', fontSize: 12 }} />
               <Line dataKey="workflows_succeeded" stroke={COLORS[1]} />
               <Line dataKey="workflows_failed" stroke={COLORS[3]} />
             </LineChart>
@@ -187,11 +186,11 @@ const MetricsDashboard: React.FC = () => {
         chart: (
           <ResponsiveContainer width="100%" height={140}>
             <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis domain={[0, 100]} />
-              <Tooltip />
-              <Legend />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+              <XAxis dataKey="date" {...axisProps} />
+              <YAxis domain={[0, 100]} {...axisProps} />
+              <Tooltip contentStyle={tooltipStyle} />
+              <Legend wrapperStyle={{ color: 'var(--text-secondary)', fontSize: 12 }} />
               <Line dataKey="avg_score" stroke={COLORS[2]} />
               <Line dataKey="approval" stroke={COLORS[1]} />
             </LineChart>
@@ -200,19 +199,19 @@ const MetricsDashboard: React.FC = () => {
       },
       {
         title: t('metrics.level3_title', '进化'),
-        icon: '🧬',
+        icon: '🌱',
         cards: [
-          { title: t('metrics.evolve_events', '进化事件'), value: fmt(last(evolution.evolution_events)), delta: delta(evolution.evolution_events) },
-          { title: t('metrics.evolve_rollbacks', '回滚次数'), value: fmt(last(evolution.evolution_rollbacks)), delta: delta(evolution.evolution_rollbacks) },
+          { title: t('metrics.evolve', '进化事件'), value: fmt(last(evolution.evolution_events)), delta: delta(evolution.evolution_events) },
+          { title: t('metrics.rollback', '回滚'), value: fmt(last(evolution.evolution_rollbacks)), delta: delta(evolution.evolution_rollbacks) },
         ],
         chart: (
           <ResponsiveContainer width="100%" height={140}>
             <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+              <XAxis dataKey="date" {...axisProps} />
+              <YAxis {...axisProps} />
+              <Tooltip contentStyle={tooltipStyle} />
+              <Legend wrapperStyle={{ color: 'var(--text-secondary)', fontSize: 12 }} />
               <Bar dataKey="evolve" fill={COLORS[0]} />
               <Bar dataKey="rollback" fill={COLORS[3]} />
             </BarChart>
@@ -223,60 +222,55 @@ const MetricsDashboard: React.FC = () => {
         title: t('metrics.level4_title', '技能'),
         icon: '🛠️',
         cards: [
-          { title: t('metrics.skill_learn', '自学尝试'), value: fmt(last(skill.skill_learning_total)), delta: delta(skill.skill_learning_total) },
-          { title: t('metrics.skill_approved', '已批准'), value: fmt(last(skill.skill_learning_approved)), delta: delta(skill.skill_learning_approved) },
-          { title: t('metrics.sandbox_runs', '沙箱运行'), value: fmt(last(skill.sandbox_runs_total)), delta: delta(skill.sandbox_runs_total) },
-          { title: t('metrics.sandbox_blocked', '安全拦截'), value: fmt(last(skill.sandbox_runs_blocked)), delta: delta(skill.sandbox_runs_blocked) },
+          { title: t('metrics.learning', '学习记录'), value: fmt(last(skill.skill_learning_total)), delta: delta(skill.skill_learning_total) },
+          { title: t('metrics.learning_ok', '已批准'), value: fmt(last(skill.skill_learning_approved)), delta: delta(skill.skill_learning_approved) },
+          { title: t('metrics.sandbox', '沙箱运行'), value: fmt(last(skill.sandbox_runs_total)), delta: delta(skill.sandbox_runs_total) },
+          { title: t('metrics.sandbox_blocked', '沙箱拦截'), value: fmt(last(skill.sandbox_runs_blocked)), delta: delta(skill.sandbox_runs_blocked) },
         ],
         chart: (
           <ResponsiveContainer width="100%" height={140}>
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="learning_total" fill={COLORS[4]} />
-              <Bar dataKey="skill_blocked" fill={COLORS[3]} />
-            </BarChart>
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+              <XAxis dataKey="date" {...axisProps} />
+              <YAxis {...axisProps} />
+              <Tooltip contentStyle={tooltipStyle} />
+              <Legend wrapperStyle={{ color: 'var(--text-secondary)', fontSize: 12 }} />
+              <Line dataKey="learning_total" stroke={COLORS[4]} />
+              <Line dataKey="skill_blocked" stroke={COLORS[3]} />
+            </LineChart>
           </ResponsiveContainer>
         ),
       },
       {
         title: t('metrics.level5_title', '成本'),
-        icon: '💰',
+        icon: '💎',
         cards: [
-          { title: t('metrics.tokens_in', '输入 Tokens'), value: fmt(last(cost.tokens_in)), delta: delta(cost.tokens_in) },
-          { title: t('metrics.tokens_out', '输出 Tokens'), value: fmt(last(cost.tokens_out)), delta: delta(cost.tokens_out) },
+          { title: t('metrics.tokens_in', '输入 Token'), value: fmt(last(cost.tokens_in)), delta: delta(cost.tokens_in) },
+          { title: t('metrics.tokens_out', '输出 Token'), value: fmt(last(cost.tokens_out)), delta: delta(cost.tokens_out) },
         ],
         chart: (
           <ResponsiveContainer width="100%" height={140}>
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line dataKey="tokens_in" stroke={COLORS[0]} />
-              <Line dataKey="tokens_out" stroke={COLORS[5]} />
-            </LineChart>
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+              <XAxis dataKey="date" {...axisProps} />
+              <YAxis {...axisProps} />
+              <Tooltip contentStyle={tooltipStyle} />
+              <Legend wrapperStyle={{ color: 'var(--text-secondary)', fontSize: 12 }} />
+              <Bar dataKey="tokens_in" fill={COLORS[0]} />
+              <Bar dataKey="tokens_out" fill={COLORS[5]} />
+            </BarChart>
           </ResponsiveContainer>
         ),
       },
     ];
-    // force unused import warning suppression
-    void pct;
-  }, [payload, chartData, t]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payload, chartData, t, latestIdx]);
 
   async function triggerBackfill() {
     setBackfilling(true);
-    setError(null);
     try {
-      const data = await fetchJson<{ tenants_processed?: number }>(
-        '/workflow-metrics/cron/trigger',
-        { method: 'POST' },
-      );
-      toast.success(t('metrics.backfill_ok', `已回填 ${data?.tenants_processed ?? 0} 租户`));
+      await fetchJson('/workflow-metrics/backfill', { method: 'POST' });
+      toast.success(t('metrics.backfill_ok', '回填完成'));
       await fetchDashboard();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'failed';
@@ -288,84 +282,77 @@ const MetricsDashboard: React.FC = () => {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">{t('metrics.title', '五级仪表盘')}</h1>
-        <div className="flex gap-2 items-center">
-          <select
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
-            className="px-2 py-1 border rounded"
-          >
-            {[7, 14, 30, 60, 90].map((d) => (
-              <option key={d} value={d}>{d} {t('metrics.days', '天')}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={triggerBackfill}
-            disabled={backfilling}
-            className="px-3 py-1.5 bg-blue-600 text-white rounded disabled:opacity-60"
-          >
-            {backfilling
-              ? t('metrics.backfill_running', '回填中…')
-              : t('metrics.backfill_now', '立即回填')}
-          </button>
-        </div>
-      </div>
+    <div className="ao-page">
+      <PageHeader
+        title={t('metrics.title', '五级仪表盘')}
+        subtitle={t('metrics.subtitle', '效率 / 质量 / 进化 / 技能 / 成本')}
+        actions={
+          <div className="ao-inline-actions">
+            <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+              {[7, 14, 30, 60, 90].map((d) => (
+                <option key={d} value={d}>
+                  {d} {t('metrics.days', '天')}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={triggerBackfill}
+              disabled={backfilling}
+              className="btn btn-primary"
+            >
+              {backfilling
+                ? t('metrics.backfill_running', '回填中…')
+                : t('metrics.backfill_now', '立即回填')}
+            </button>
+          </div>
+        }
+      />
 
       {error && (
-        <div className="mb-3">
-          <ErrorBanner
-            message={error}
-            onRetry={fetchDashboard}
-            tone="error"
-          />
+        <div style={{ marginBottom: 12 }}>
+          <ErrorBanner message={error} onRetry={fetchDashboard} tone="error" />
         </div>
       )}
 
       {loading && !payload ? (
         <LoadingState label={t('metrics.loading', '加载指标…')} rows={5} />
       ) : (
-      <div className="grid gap-4">
-        {levels.map((level, idx) => (
-          <section
-            key={level.title}
-            className="rounded-xl shadow-sm border p-4"
-            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-          >
-            <header className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-semibold">
-                <span className="mr-2 text-xl">{level.icon}</span>
-                {idx + 1}. {level.title}
-              </h2>
-            </header>
+        <div className="ao-stack">
+          {levels.map((level, idx) => (
+            <section key={level.title} className="ao-panel">
+              <header className="ao-toolbar" style={{ marginBottom: 12 }}>
+                <h2 className="ao-section-title" style={{ margin: 0 }}>
+                  <span style={{ marginRight: 8 }}>{level.icon}</span>
+                  {idx + 1}. {level.title}
+                </h2>
+              </header>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mb-3">
-              {level.cards.map((card) => (
-                <div
-                  key={card.title}
-                  className="border rounded p-3"
-                  style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-tertiary)' }}
-                >
-                  <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{card.title}</div>
-                  <div className="text-xl font-semibold">{card.value}</div>
-                  {card.delta !== 0 && (
-                    <div
-                      className={`text-xs ${
-                        card.delta > 0 ? 'text-green-600' : 'text-red-600'
-                      }`}
-                    >
-                      {card.delta > 0 ? '+' : ''}{card.delta}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            {level.chart && <div className="-mx-2">{level.chart}</div>}
-          </section>
-        ))}
-      </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+                  gap: 12,
+                  marginBottom: 12,
+                }}
+              >
+                {level.cards.map((card) => (
+                  <div key={card.title} className="ao-stat">
+                    <div className="ao-stat-label">{card.title}</div>
+                    <div className="ao-stat-value">{card.value}</div>
+                    {card.delta !== 0 && (
+                      <div className={card.delta > 0 ? 'ao-delta-up' : 'ao-delta-down'}>
+                        {card.delta > 0 ? '+' : ''}
+                        {card.delta}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {level.chart}
+            </section>
+          ))}
+        </div>
       )}
     </div>
   );

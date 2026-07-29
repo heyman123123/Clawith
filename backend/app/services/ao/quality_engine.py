@@ -11,7 +11,7 @@ gate step progression. The verdict produced here drives:
    * score below threshold and ``retry_count < max_retries`` → ``quality_retry``.
    * otherwise → ``quality_failed``.
 
-2. Persisted feedback file under ``02-质控/feedback/step_<id>.md`` via
+2. Persisted feedback file under ``03-质量管控/feedback/step_<id>.md`` via
    :func:`app.services.ao.asset_writer.write_step_asset`.
 
 3. A best-effort :func:`run_quality_check` hook returning a JSON-friendly
@@ -376,12 +376,75 @@ async def run_quality_check_with_verdict(
     return {"ok": True, "step_id": str(safe_step_id), "asset": result}
 
 
+@dataclass(frozen=True)
+class FullQualityOutcome:
+    """Aggregate verdict for ``quality_check_full`` (需求 §4.1 / §8.3)."""
+
+    outcomes: tuple[QualityOutcome, ...]
+    passed: bool
+    average_score: float
+    failed_step_ids: tuple[uuid.UUID, ...]
+    checked_count: int
+
+
+async def run_quality_check_full(
+    db: AsyncSession,
+    *,
+    workflow_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    enable_llm_judge: bool = True,
+) -> FullQualityOutcome:
+    """Run step-level quality checks across every DAG step for a workflow.
+
+    This is the backend counterpart of the ``quality_check_full`` tool named in
+    the quality officer soul — invoked by the dispatcher / delivery gate rather
+    than as a free-form LLM tool call.
+    """
+    steps = list(
+        (
+            await db.scalars(
+                select(WorkflowRunStep)
+                .where(
+                    WorkflowRunStep.workflow_id == workflow_id,
+                    WorkflowRunStep.tenant_id == tenant_id,
+                )
+                .order_by(WorkflowRunStep.step_order.asc())
+            )
+        ).all()
+    )
+    outcomes: list[QualityOutcome] = []
+    failed: list[uuid.UUID] = []
+    for step in steps:
+        outcome = await run_quality_check(
+            db,
+            workflow_id=workflow_id,
+            tenant_id=tenant_id,
+            step_id=step.id,
+            enable_llm_judge=enable_llm_judge,
+        )
+        outcomes.append(outcome)
+        if outcome.next_status != TERMINAL_PASS_STATUS:
+            failed.append(step.id)
+
+    scores = [o.verdict.score for o in outcomes]
+    average = (sum(scores) / len(scores)) if scores else 0.0
+    return FullQualityOutcome(
+        outcomes=tuple(outcomes),
+        passed=len(failed) == 0 and len(outcomes) > 0,
+        average_score=round(average, 2),
+        failed_step_ids=tuple(failed),
+        checked_count=len(outcomes),
+    )
+
+
 __all__ = [
     "FAIL_STATUS",
     "RETRY_STATUS",
     "TERMINAL_PASS_STATUS",
+    "FullQualityOutcome",
     "QualityOutcome",
     "QualityVerdict",
     "run_quality_check",
+    "run_quality_check_full",
     "run_quality_check_with_verdict",
 ]

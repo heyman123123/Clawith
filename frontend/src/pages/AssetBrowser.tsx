@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { deliveryReviewApi, DeliveryRoundItem } from '../services/api';
+import { aoAssetsApi } from '../services/api';
 import { EmptyState, ErrorBanner, LoadingState } from '../components/UI';
 
 /**
@@ -29,6 +29,13 @@ const CATEGORIES: { key: string; label: string; description: string }[] = [
     { key: '07-历史迭代', label: '历史迭代', description: '上一版本的资产快照' },
 ];
 
+const LEGACY_TO_BUCKET: Record<string, string> = {
+    requirement: '00-工作流定义',
+    execution: '01-步骤输出',
+    quality: '03-质量管控',
+    delivery: '04-交付验收',
+};
+
 interface AssetEntry {
     rel_path: string;
     category: string;
@@ -51,22 +58,26 @@ const AssetBrowser: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            // Real endpoint: query the delivery review rounds for this workflow,
-            // since the dedicated assets API (`/api/ao/workflows/<id>/assets`) is
-            // not yet wired. We surface a graceful empty state on 404 and
-            // route the response through the API service layer.
-            const rounds = await deliveryReviewApi
-                .listRounds(workflowId)
-                .catch(() => [] as DeliveryRoundItem[]);
-
-            // Bucket the rounds under the "04-交付验收" category so the UI is
-            // still useful even before the asset API ships.
-            const bucket: AssetEntry[] = (rounds || []).map((round) => ({
-                rel_path: `rounds/${round.id}.json`,
-                category: '04-交付验收',
-                byte_size: JSON.stringify(round).length,
-                hash: round.id,
-            }));
+            const data = await aoAssetsApi.list(workflowId, { sync: true }).catch(() => null);
+            if (!data) {
+                setAssets([]);
+                return;
+            }
+            const bucket: AssetEntry[] = (data.items || []).map((item) => {
+                const fromPath = CATEGORIES.find((c) => item.rel_path.startsWith(`${c.key}/`));
+                const category =
+                    fromPath?.key ||
+                    LEGACY_TO_BUCKET[item.category] ||
+                    item.category ||
+                    CATEGORIES[0].key;
+                return {
+                    rel_path: item.rel_path,
+                    category,
+                    byte_size: item.byte_size,
+                    hash: item.hash,
+                    orphaned: item.orphaned,
+                };
+            });
             setAssets(bucket);
         } catch (err) {
             setError((err as Error).message);

@@ -80,7 +80,13 @@ def _fernet_placeholder(plaintext: bytes, key: bytes) -> bytes:
 
 
 def placeholder_encrypt(plaintext: str, *, key: bytes | None = None) -> str:
-    """Return a hex string for the placeholder ciphertext."""
+    """Return a hex string for the placeholder ciphertext.
+
+    **Known limitation (需求 §5 / gap-closure):** this is NOT production-grade
+    encryption. Before any grey-release / customer deployment the call sites
+    MUST be swapped to a real KMS (or equivalent envelope encryption). Do not
+    store secrets with this helper outside local/dev fixtures.
+    """
     key = key or os.environ.get("CLAWITH_SECRET_KEY", "dev-placeholder").encode()
     return _fernet_placeholder(plaintext.encode("utf-8"), key).hex()
 

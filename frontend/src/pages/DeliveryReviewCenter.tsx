@@ -8,14 +8,10 @@ import {
     HumanReviewItem,
 } from '../services/api';
 import { useToast } from '../components/Toast/ToastProvider';
-import { EmptyState, ErrorBanner } from '../components/UI';
+import { EmptyState, ErrorBanner, PageHeader } from '../components/UI';
 
 /**
  * P3 + P7 — 交付验收中心
- *
- * - 顶部"提交一轮验收"卡片：质量分 (60%) + 范围分 (40%) 双维度
- * - 下方"历史轮次" 列表
- * - 右侧抽屉：人审队列 (审批卡 / 决策卡 / 高危技能审核 / 质检异常人工复核)
  */
 const DeliveryReviewCenter: React.FC = () => {
     const { t } = useTranslation();
@@ -78,7 +74,7 @@ const DeliveryReviewCenter: React.FC = () => {
             toast.success(
                 decision === 'approved'
                     ? t('delivery.approved', '已批准')
-                    : t('delivery.rejected', '已驳回'),
+                    : t('delivery.rejected', '已驳回')
             );
             await load();
         } catch (err) {
@@ -88,33 +84,33 @@ const DeliveryReviewCenter: React.FC = () => {
         }
     };
 
+    const decisionTone = (decision: string) => {
+        if (decision === 'approved') return 'ao-tone-success';
+        if (decision === 'rejected') return 'ao-tone-error';
+        return 'ao-page-muted';
+    };
+
     return (
-        <div className="p-6 max-w-7xl mx-auto">
-            <header className="mb-4">
-                <h1 className="text-2xl font-semibold">{t('delivery.title', '交付验收中心')}</h1>
-                <p className="text-gray-500 text-sm">
-                    {t(
-                        'delivery.subtitle',
-                        '需求 §4.11 / §8.3 — 质量 60% + 范围 40% 双维度评分，≥90 通过；最多 3 轮整改。'
-                    )}
-                </p>
-            </header>
+        <div className="ao-page">
+            <PageHeader
+                title={t('delivery.title', '交付验收中心')}
+                subtitle={t(
+                    'delivery.subtitle',
+                    '需求 §4.11 / §8.3 — 质量 60% + 范围 40% 双维度评分，≥90 通过；最多 3 轮整改。'
+                )}
+            />
 
             {error ? (
-                <div className="mb-3">
-                    <ErrorBanner
-                        message={error}
-                        onRetry={load}
-                        tone="error"
-                    />
+                <div style={{ marginBottom: 12 }}>
+                    <ErrorBanner message={error} onRetry={load} tone="error" />
                 </div>
             ) : null}
 
-            <section className="border rounded-lg p-4 mb-6" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
-                <h2 className="text-lg font-medium mb-3">{t('delivery.submit_round', '提交一轮验收')}</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <label className="flex flex-col gap-1">
-                        <span className="text-sm text-gray-600">
+            <section className="ao-panel" style={{ marginBottom: 16 }}>
+                <h2 className="ao-section-title">{t('delivery.submit_round', '提交一轮验收')}</h2>
+                <div className="ao-grid-2">
+                    <label>
+                        <span className="ao-field-label">
                             {t('delivery.quality', '质量分 (60%)')} — {quality}
                         </span>
                         <input
@@ -123,10 +119,11 @@ const DeliveryReviewCenter: React.FC = () => {
                             max={100}
                             value={quality}
                             onChange={(e) => setQuality(Number(e.target.value))}
+                            className="ao-input-block"
                         />
                     </label>
-                    <label className="flex flex-col gap-1">
-                        <span className="text-sm text-gray-600">
+                    <label>
+                        <span className="ao-field-label">
                             {t('delivery.coverage', '范围分 (40%)')} — {coverage}
                         </span>
                         <input
@@ -135,6 +132,7 @@ const DeliveryReviewCenter: React.FC = () => {
                             max={100}
                             value={coverage}
                             onChange={(e) => setCoverage(Number(e.target.value))}
+                            className="ao-input-block"
                         />
                     </label>
                 </div>
@@ -142,35 +140,36 @@ const DeliveryReviewCenter: React.FC = () => {
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     placeholder={t('delivery.notes_placeholder', '整改意见 / 备注')}
-                    className="w-full mt-3 border rounded-md px-3 py-2 min-h-[80px]"
+                    className="ao-input-block textarea"
+                    style={{ marginTop: 12 }}
                 />
-                <div className="mt-3 flex items-center gap-3">
+                <div className="ao-inline-actions" style={{ marginTop: 12 }}>
                     <button
+                        type="button"
                         onClick={submit}
                         disabled={submitting || !workflowId}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-md disabled:opacity-50"
+                        className="btn btn-primary"
                     >
                         {submitting ? t('delivery.submitting', '提交中…') : t('delivery.submit', '提交本轮验收')}
                     </button>
-                    <span className="text-sm text-gray-500">
-                        {t('delivery.preview', '本轮预览分')}:{' '}
-                        {Math.round(0.6 * quality + 0.4 * coverage)}
+                    <span className="ao-page-muted">
+                        {t('delivery.preview', '本轮预览分')}: {Math.round(0.6 * quality + 0.4 * coverage)}
                     </span>
                 </div>
             </section>
 
-            <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="border rounded-lg p-4" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
-                    <h2 className="text-lg font-medium mb-3">{t('delivery.rounds', '历史轮次')}</h2>
+            <section className="ao-grid-2">
+                <div className="ao-panel">
+                    <h2 className="ao-section-title">{t('delivery.rounds', '历史轮次')}</h2>
                     {rounds.length === 0 ? (
                         <EmptyState
                             title={t('delivery.empty_title', '尚无验收记录')}
                             description={t('delivery.empty', '暂无验收记录')}
                         />
                     ) : (
-                        <table className="w-full text-sm">
+                        <table className="ao-table">
                             <thead>
-                                <tr className="text-left border-b">
+                                <tr>
                                     <th>#</th>
                                     <th>质量</th>
                                     <th>范围</th>
@@ -180,24 +179,12 @@ const DeliveryReviewCenter: React.FC = () => {
                             </thead>
                             <tbody>
                                 {rounds.map((round) => (
-                                    <tr key={round.id} className="border-b last:border-b-0">
+                                    <tr key={round.id}>
                                         <td>{round.round_no}</td>
                                         <td>{round.quality_score ?? '—'}</td>
                                         <td>{round.coverage_score ?? '—'}</td>
                                         <td>{round.final_score ?? '—'}</td>
-                                        <td>
-                                            <span
-                                                className={
-                                                    round.decision === 'approved'
-                                                        ? 'text-green-600'
-                                                        : round.decision === 'rejected'
-                                                        ? 'text-red-600'
-                                                        : 'text-gray-500'
-                                                }
-                                            >
-                                                {round.decision}
-                                            </span>
-                                        </td>
+                                        <td className={decisionTone(round.decision)}>{round.decision}</td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -205,8 +192,8 @@ const DeliveryReviewCenter: React.FC = () => {
                     )}
                 </div>
 
-                <div className="border rounded-lg p-4" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
-                    <h2 className="text-lg font-medium mb-3">
+                <div className="ao-panel">
+                    <h2 className="ao-section-title">
                         {t('delivery.reviews', '人审队列 (审批卡 / 决策卡 / 高危技能审核 / 质检异常)')}
                     </h2>
                     {reviews.length === 0 ? (
@@ -215,28 +202,28 @@ const DeliveryReviewCenter: React.FC = () => {
                             description={t('delivery.reviews_empty', '队列为空')}
                         />
                     ) : (
-                        <ul className="space-y-3">
+                        <ul className="ao-stack" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
                             {reviews.map((r) => (
-                                <li key={r.id} className="border rounded-md p-3">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-sm font-medium">{r.kind}</span>
-                                        <span className="text-xs text-gray-500">
+                                <li key={r.id} className="ao-callout">
+                                    <div className="ao-toolbar" style={{ marginBottom: 8 }}>
+                                        <span style={{ fontWeight: 600 }}>{r.kind}</span>
+                                        <span className="ao-page-subtle">
                                             {new Date(r.created_at).toLocaleString()}
                                         </span>
                                     </div>
-                                    <pre className="text-xs bg-gray-50 rounded p-2 my-2 max-h-32 overflow-auto">
-                                        {JSON.stringify(r.payload, null, 2)}
-                                    </pre>
-                                    <div className="flex gap-2">
+                                    <pre className="ao-pre">{JSON.stringify(r.payload, null, 2)}</pre>
+                                    <div className="ao-inline-actions" style={{ marginTop: 8 }}>
                                         <button
+                                            type="button"
                                             onClick={() => resolveReview(r.id, 'approved')}
-                                            className="px-3 py-1 text-sm bg-green-600 text-white rounded"
+                                            className="btn ao-success"
                                         >
                                             批准
                                         </button>
                                         <button
+                                            type="button"
                                             onClick={() => resolveReview(r.id, 'rejected')}
-                                            className="px-3 py-1 text-sm bg-red-600 text-white rounded"
+                                            className="btn ao-danger"
                                         >
                                             驳回
                                         </button>

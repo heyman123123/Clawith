@@ -251,7 +251,8 @@ async def _get_or_create_template(
             category="workflow",
             is_builtin=True,
             soul_template=spec.soul_body,
-            default_skills=list(spec.default_tools),
+            # Tools are bound via AgentTool rows — do NOT put tool names in skills.
+            default_skills=[],
             default_mcp_servers=[],
             default_autonomy_policy={},
             capability_bullets=[
@@ -271,9 +272,50 @@ async def _get_or_create_template(
     else:
         template.description = spec.description
         template.soul_template = spec.soul_body
-        template.default_skills = list(spec.default_tools)
+        template.default_skills = []
     await db.flush()
     return template
+
+
+async def _bind_default_tools(
+    db: AsyncSession,
+    agent: Agent,
+    tool_names: tuple[str, ...],
+) -> int:
+    """Idempotently attach builtin ``Tool`` rows to ``agent`` as ``AgentTool``.
+
+    Missing global Tool seeds are skipped (startup seeder may not have run yet
+    in unit tests). Returns the number of newly created AgentTool rows.
+    """
+    from app.models.tool import AgentTool, Tool
+
+    created = 0
+    for name in tool_names:
+        tool = await db.scalar(select(Tool).where(Tool.name == name))
+        if tool is None:
+            continue
+        existing = await db.scalar(
+            select(AgentTool).where(
+                AgentTool.agent_id == agent.id,
+                AgentTool.tool_id == tool.id,
+            )
+        )
+        if existing is not None:
+            existing.enabled = True
+            continue
+        db.add(
+            AgentTool(
+                id=uuid.uuid4(),
+                agent_id=agent.id,
+                tool_id=tool.id,
+                enabled=True,
+                source="system",
+            )
+        )
+        created += 1
+    if created:
+        await db.flush()
+    return created
 
 
 async def _get_or_create_agent(
@@ -368,6 +410,7 @@ async def _ensure_one_role(
         model_id=model_id,
         template=template,
     )
+    await _bind_default_tools(db, agent, spec.default_tools)
     await _write_template_soul_file(spec)
     return agent
 

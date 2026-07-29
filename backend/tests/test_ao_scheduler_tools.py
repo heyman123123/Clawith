@@ -127,7 +127,7 @@ def test_ao_resume_from_step_returns_process_metadata(
     ]
 
 
-def test_init_workflow_dir_creates_four_stage_directories_and_readmes(
+def test_init_workflow_dir_creates_eight_bucket_directories_and_readmes(
     ao_paths: tuple[Path, Path],
 ) -> None:
     _, output_dir = ao_paths
@@ -136,8 +136,21 @@ def test_init_workflow_dir_creates_four_stage_directories_and_readmes(
     result = scheduler_tools.init_workflow_dir(workflow_id)
 
     run_dir = output_dir / workflow_id
-    assert result == {"ok": True, "workflow_id": workflow_id, "run_dir": str(run_dir)}
-    for directory in ("00-需求", "01-执行", "02-质控", "03-交付"):
+    expected_buckets = [
+        "00-工作流定义",
+        "01-步骤输出",
+        "02-过程记录",
+        "03-质量管控",
+        "04-交付验收",
+        "05-技能档案",
+        "06-最终交付",
+        "07-历史迭代",
+    ]
+    assert result["ok"] is True
+    assert result["workflow_id"] == workflow_id
+    assert result["run_dir"] == str(run_dir)
+    assert result["buckets"] == expected_buckets
+    for directory in expected_buckets:
         assert (run_dir / directory / "README.md").is_file()
 
 
@@ -241,7 +254,9 @@ async def test_send_channel_message_enqueues_public_group_message(
 
     assert result == {
         "ok": True,
+        "tenant_id": str(scope.tenant_id),
         "group_id": str(group_id),
+        "session_id": str(scope.session_id),
         "message_id": str(message_id),
         "dispatch_kind": "none",
     }
@@ -334,3 +349,156 @@ async def test_run_scheduler_kickoff_invokes_all_first_launch_steps(
     assert message_call[1] == str(group_id)
     assert "2 步骤预计 10 分钟" in message_call[2]
     assert ("mark", workflow_id) in calls
+
+
+@pytest.mark.asyncio
+async def test_run_scheduler_kickoff_fails_when_send_channel_message_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=workflow_id,
+        group_id=group_id,
+        group_leader_agent_id=uuid.uuid4(),
+        creator_id=uuid.uuid4(),
+    )
+    db = _FakeDB(scalar_value=run)
+    monkeypatch.setattr(
+        scheduler_kickoff,
+        "init_workflow_dir",
+        lambda _value: {"ok": True, "run_dir": "/tmp/run"},
+    )
+    monkeypatch.setattr(
+        scheduler_kickoff,
+        "ao_get_execution_plan",
+        lambda _value: [{"id": "one", "role": "analyst", "depends_on": [], "output": None, "order": 0}],
+    )
+    monkeypatch.setattr(
+        scheduler_kickoff,
+        "update_workflow_status",
+        lambda *_a, **_k: {"ok": True, "status": "active"},
+    )
+
+    async def boom(_group_id: str, _content: str):
+        raise RuntimeError("no participant")
+
+    monkeypatch.setattr(scheduler_kickoff, "send_channel_message", boom)
+    mark_calls: list[uuid.UUID] = []
+
+    async def fake_mark(_db, *, workflow_id: uuid.UUID):
+        mark_calls.append(workflow_id)
+        return run
+
+    monkeypatch.setattr(scheduler_kickoff.run_repository, "mark_run_started", fake_mark)
+
+    result = await scheduler_kickoff.run_scheduler_kickoff(db, workflow_id=workflow_id)
+
+    assert result["ok"] is False
+    assert result["error"] == "send_channel_message failed"
+    assert any(step["step"] == "send_channel_message" and step["ok"] is False for step in result["steps"])
+    assert mark_calls == [], "mark_run_started must not run after broadcast failure"
+
+
+@pytest.mark.asyncio
+async def test_load_dispatch_scope_resolves_session_from_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ProjectWorkflow has no session_id column — scope must load ChatSession by group."""
+    workflow_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    scheduler_agent_id = uuid.uuid4()
+    target_agent_id = uuid.uuid4()
+    creator_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    sender_participant_id = uuid.uuid4()
+    target_participant_id = uuid.uuid4()
+
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        group_leader_agent_id=scheduler_agent_id,
+        creator_id=creator_id,
+    )
+    # Explicitly prove AttributeError path is avoided: no session_id attr.
+    assert not hasattr(workflow, "session_id")
+
+    scheduler_participant = SimpleNamespace(id=sender_participant_id, ref_id=scheduler_agent_id)
+    target_participant = SimpleNamespace(id=target_participant_id, ref_id=target_agent_id)
+    target_agent = SimpleNamespace(id=target_agent_id)
+
+    class _Scalars:
+        def all(self):
+            return [scheduler_participant, target_participant]
+
+    class _Result:
+        def scalars(self):
+            return _Scalars()
+
+    class _DB:
+        async def scalar(self, _stmt):
+            return workflow
+
+        async def execute(self, _stmt):
+            return _Result()
+
+        async def get(self, _model, key):
+            if key == target_agent_id:
+                return target_agent
+            return None
+
+    async def fake_resolve(_db, *, group_id: uuid.UUID):
+        assert group_id == workflow.group_id
+        return session_id
+
+    monkeypatch.setattr(scheduler_tools, "_resolve_group_session_id", fake_resolve)
+
+    scope = await scheduler_tools._load_dispatch_scope(
+        _DB(),
+        workflow_id=workflow_id,
+        target_agent_id=target_agent_id,
+    )
+    assert scope.session_id == session_id
+    assert scope.group_id == group_id
+    assert scope.sender_participant_id == sender_participant_id
+    assert scope.target_participant_id == target_participant_id
+
+
+@pytest.mark.asyncio
+async def test_publish_enqueued_group_message_after_commit_uses_stored_publisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    seen: dict[str, object] = {}
+
+    async def fake_publish(session_factory, *, tenant_id, session_id, message_id):
+        seen["tenant_id"] = tenant_id
+        seen["session_id"] = session_id
+        seen["message_id"] = message_id
+        seen["session_factory"] = session_factory
+        return True
+
+    monkeypatch.setattr(
+        "app.services.group_realtime.publish_stored_group_message",
+        fake_publish,
+    )
+
+    ok = await scheduler_tools.publish_enqueued_group_message_after_commit(
+        {
+            "ok": True,
+            "result": {
+                "tenant_id": str(tenant_id),
+                "session_id": str(session_id),
+                "message_id": str(message_id),
+            },
+        }
+    )
+    assert ok is True
+    assert seen["tenant_id"] == tenant_id
+    assert seen["session_id"] == session_id
+    assert seen["message_id"] == message_id

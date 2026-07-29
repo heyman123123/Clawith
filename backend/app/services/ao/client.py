@@ -267,6 +267,7 @@ class AOClient:
         env_overrides: dict[str, str] | None = None,
     ) -> tuple[int, str, str]:
         """Execute AO consistently so timeout, environment, and capture stay centralized."""
+        self._assert_enabled()
         completed = subprocess.run(
             argv,
             cwd=cwd,
@@ -277,6 +278,20 @@ class AOClient:
             check=False,
         )
         return completed.returncode, completed.stdout, completed.stderr
+
+    def _assert_enabled(self) -> None:
+        """Fail fast when AO CLI is disabled or vendor path is missing."""
+        if not bool(self.settings.AO_ENABLED):
+            raise RuntimeError(
+                "AO_ENABLED=false — set AO_ENABLED=true and install agency-orchestrator "
+                "(PATH `ao` or AO_VENDOR_DIR → backend/vendor/ao). See docs/adr/0001-ao-integration.md."
+            )
+        vendor = (self.settings.AO_VENDOR_DIR or "").strip()
+        if vendor and not Path(vendor).exists():
+            raise RuntimeError(
+                f"AO_VENDOR_DIR={vendor} does not exist. Unpack agency-orchestrator there "
+                "or clear AO_VENDOR_DIR to use AO_CLI_PATH on PATH."
+            )
 
     def _cli_prefix(self) -> list[str]:
         vendor_dir = self.settings.AO_VENDOR_DIR

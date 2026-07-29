@@ -740,6 +740,107 @@ export const humanReviewApi = {
 export const officialTemplatesApi = {
     list: (): Promise<OfficialTemplateItem[]> =>
         request<OfficialTemplateItem[]>(`/workflow-metrics/templates`),
+    skeleton: (
+        templateId: string
+    ): Promise<{
+        template_id: string;
+        slug: string;
+        title: string;
+        yaml_text: string;
+        recommended_roles: string[];
+        step_count: number;
+    }> => request(`/workflow-metrics/templates/${templateId}/skeleton`),
+};
+
+export const aoAssetsApi = {
+    list: (
+        workflowId: string,
+        params: { category?: string; sync?: boolean } = {}
+    ): Promise<{
+        workflow_id: string;
+        buckets: string[];
+        categories: string[];
+        items: Array<{
+            id: string;
+            category: string;
+            rel_path: string;
+            byte_size: number;
+            hash: string;
+            orphaned?: boolean;
+        }>;
+        count: number;
+    }> => {
+        const search = new URLSearchParams();
+        if (params.category) search.set('category', params.category);
+        if (params.sync) search.set('sync', 'true');
+        const qs = search.toString();
+        return request(`/ao/workflows/${workflowId}/assets${qs ? `?${qs}` : ''}`);
+    },
+    tokenUsage: (
+        workflowId: string
+    ): Promise<{
+        ok: boolean;
+        workflow_id: string;
+        total_input_tokens: number;
+        total_output_tokens: number;
+        steps: Array<{
+            step_id: string;
+            step_key: string;
+            input_tokens: number | null;
+            output_tokens: number | null;
+            status: string;
+        }>;
+    }> => request(`/ao/workflows/${workflowId}/token-usage`),
+};
+
+export const roleGrowthApi = {
+    listAgents: (): Promise<{
+        ok: boolean;
+        items: Array<{
+            agent_id: string;
+            name: string;
+            role_description: string;
+            current_version_no: number;
+            current_source: string;
+            quality_score: number | null;
+            summary: string | null;
+        }>;
+        count: number;
+    }> => request('/ao/evolution/agents'),
+    listVersions: (
+        agentId: string
+    ): Promise<{
+        ok: boolean;
+        agent_id: string;
+        name: string;
+        role_description: string;
+        current_version_id: string | null;
+        versions: Array<{
+            id: string;
+            version_no: number;
+            source: string;
+            quality_score: number | null;
+            summary: string | null;
+            soul_md_preview: string;
+            is_current: boolean;
+        }>;
+    }> => request(`/ao/agents/${agentId}/versions`),
+    rollback: (
+        agentId: string,
+        rationale?: string
+    ): Promise<{
+        ok: boolean;
+        agent_id: string;
+        new_version_id: string | null;
+        prior_version_id: string | null;
+        evolved: boolean;
+    }> =>
+        request(`/ao/agents/${agentId}/rollback`, {
+            method: 'POST',
+            body: JSON.stringify({
+                rationale: rationale || 'manual rollback from growth centre',
+            }),
+        }),
 };
 
 export const orgApi = {

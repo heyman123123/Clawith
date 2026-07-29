@@ -339,6 +339,7 @@ async def compose_initial_workflow_for_project(
             yaml_text=str(compose_metadata["yaml_text"]),
             run_dir=run_dir,
             agent_ids=agent_ids,
+            dag_steps=list(compose_metadata.get("dag_steps") or []),
         )
     except Exception as exc:  # noqa: BLE001 - degraded path; see docstring
         logger.exception(
@@ -370,7 +371,13 @@ async def compose_initial_workflow_for_project(
         key = str(role.get("key") or "").strip()
         if not key or key in power_slot_keys:
             continue
-        executor_ids.append(key)
+        # Prefer concrete Agent UUID when provisioning already created it.
+        bound = agent_ids.get(key)
+        executor_ids.append(str(bound) if isinstance(bound, uuid.UUID) else key)
+    # Also record UUID list from compose metadata when present.
+    for raw in compose_metadata.get("executor_agent_ids") or []:
+        if raw and raw not in executor_ids:
+            executor_ids.append(str(raw))
     workflow.executor_agent_ids = executor_ids
     workflow.member_count = len(roles) + (len(system_agents) if system_agents else 0)
     await db.flush()

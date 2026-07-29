@@ -6,6 +6,7 @@ import uuid
 from datetime import date
 from typing import Any
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -20,6 +21,7 @@ from app.models.metrics import (
 )
 from app.models.user import User
 from app.services import workflow_metrics as svc
+from app.services.ao.template_skeleton import skeleton_yaml_for_roles
 
 router = APIRouter(prefix="/workflow-metrics", tags=["workflow-metrics"])
 
@@ -201,6 +203,39 @@ async def list_templates(
     stmt = stmt.order_by(WorkflowTemplate.usage_count.desc(), WorkflowTemplate.updated_at.desc())
     rows = (await db.scalars(stmt)).all()
     return [_template_payload(r) for r in rows]
+
+
+@router.get("/templates/{template_id}/skeleton")
+async def get_template_skeleton(
+    template_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return a minimal AO YAML skeleton for one-click start (需求 §8.7)."""
+    row = await db.scalar(
+        select(WorkflowTemplate).where(
+            WorkflowTemplate.id == template_id,
+            WorkflowTemplate.tenant_id == _tenant_id(current_user),
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    yaml_text = skeleton_yaml_for_roles(
+        workflow_name=row.title,
+        recommended_roles=list(row.recommended_roles or []),
+        provider=row.ao_provider or "openai",
+        model=row.ao_model or "clawith-gateway",
+    )
+    parsed = yaml.safe_load(yaml_text) or {}
+    steps = parsed.get("steps") if isinstance(parsed, dict) else []
+    return {
+        "template_id": str(row.id),
+        "slug": row.slug,
+        "title": row.title,
+        "yaml_text": yaml_text,
+        "recommended_roles": list(row.recommended_roles or []),
+        "step_count": len(steps) if isinstance(steps, list) else 0,
+    }
 
 
 @router.post("/templates", response_model=WorkflowTemplateOut, status_code=201)

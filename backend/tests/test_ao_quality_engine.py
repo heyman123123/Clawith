@@ -244,3 +244,64 @@ async def test_run_quality_check_missing_step(monkeypatch: pytest.MonkeyPatch) -
             tenant_id=uuid.uuid4(),
             step_id=uuid.uuid4(),
         )
+
+async def test_run_quality_check_full_aggregates_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.ao.quality_engine import FullQualityOutcome, run_quality_check_full
+    from app.services.ao.quality_rules import QualityVerdict
+
+    workflow_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    step_a = uuid.uuid4()
+    step_b = uuid.uuid4()
+
+    class _Step:
+        def __init__(self, sid):
+            self.id = sid
+
+    class _Scalars:
+        def all(self):
+            return [_Step(step_a), _Step(step_b)]
+
+    class _DB:
+        async def scalars(self, _stmt):
+            return _Scalars()
+
+    calls: list[uuid.UUID] = []
+
+    async def fake_run_quality_check(
+        db,
+        *,
+        workflow_id,
+        tenant_id,
+        step_id,
+        enable_llm_judge=True,
+        output_text=None,
+    ):
+        calls.append(step_id)
+        passed = step_id == step_a
+        return quality_engine.QualityOutcome(
+            verdict=QualityVerdict(
+                score=90 if passed else 40,
+                passed=passed,
+                feedback="ok" if passed else "bad",
+                per_rule=[],
+            ),
+            next_status=TERMINAL_PASS_STATUS if passed else FAIL_STATUS,
+            retry_count=0,
+            feedback_asset=None,
+        )
+
+    monkeypatch.setattr(quality_engine, "run_quality_check", fake_run_quality_check)
+
+    outcome = await run_quality_check_full(
+        _DB(),  # type: ignore[arg-type]
+        workflow_id=workflow_id,
+        tenant_id=tenant_id,
+        enable_llm_judge=False,
+    )
+    assert isinstance(outcome, FullQualityOutcome)
+    assert outcome.checked_count == 2
+    assert outcome.passed is False
+    assert outcome.failed_step_ids == (step_b,)
+    assert outcome.average_score == 65.0
+    assert calls == [step_a, step_b]

@@ -89,10 +89,15 @@ def attempt_label(round_no: int) -> str:
 
 
 def new_round_no(previous: int | None) -> int:
-    """Bump-and-cap helper that always returns a valid 1..MAX_ROUNDS value."""
+    """Return the next round number (uncapped).
+
+    Callers must reject ``> MAX_ROUNDS`` themselves (e.g. HTTP 409).  Capping
+    here used to silently reuse round ``MAX_ROUNDS``, which let clients keep
+    inserting after the third failure and never hit the escalation gate.
+    """
     if previous is None:
         return 1
-    return max(1, min(MAX_ROUNDS, previous + 1))
+    return max(1, int(previous) + 1)
 
 
 __all__ = [

@@ -40,17 +40,17 @@ _DEFAULT_DAG_STEPS: tuple[dict, ...] = (
         "step_key": "clarify",
         "step_order": 0,
         "role_path": "product/project-scheduler",
-        "task_summary": "把需求拆成 3~5 个执行步骤",
+        "task_summary": "把需求拆成可分发给各执行角色的步骤",
         "output_var": "plan",
         "depends_on": [],
         "acceptance_text": "输出包含可执行的下游任务清单",
     },
     {
-        "step_key": "execute",
+        "step_key": "execute_default",
         "step_order": 1,
-        "role_path": "product/executor-0",
+        "role_path": "product/product-manager",
         "task_summary": "执行计划 {{plan}}",
-        "output_var": "artifact",
+        "output_var": "artifact_0",
         "depends_on": ["clarify"],
         "acceptance_text": "产出物落盘到工作流实例目录",
     },
@@ -58,10 +58,19 @@ _DEFAULT_DAG_STEPS: tuple[dict, ...] = (
         "step_key": "review",
         "step_order": 2,
         "role_path": "quality/quality-reviewer",
-        "task_summary": "对 {{artifact}} 做质检，输出 score 0~100",
+        "task_summary": "对全部执行产物做质检，输出 score 0~100",
         "output_var": "review",
-        "depends_on": ["execute"],
+        "depends_on": ["execute_default"],
         "acceptance_text": "输出包含 score 与 feedback",
+    },
+    {
+        "step_key": "deliver",
+        "step_order": 3,
+        "role_path": "delivery/delivery-coordinator",
+        "task_summary": "整理交付包并申请真人交付经理验收",
+        "output_var": "delivery_package",
+        "depends_on": ["review"],
+        "acceptance_text": "交付包索引完整且可提交验收",
     },
 )
 
@@ -73,34 +82,35 @@ async def create_run_row(
     yaml_text: str,
     run_dir: Path,
     agent_ids: dict[str, uuid.UUID] | None = None,
+    dag_steps: list[dict] | None = None,
 ) -> list[WorkflowRunStep]:
-    """Insert one ``WorkflowRunStep`` row per default DAG node.
+    """Insert one ``WorkflowRunStep`` row per DAG node.
 
-    The function takes the already-flushed ``ProjectWorkflow`` from the
-    provisioning transaction, then stages three ``WorkflowRunStep`` rows
-    (clarify → execute → review) that mirror the YAML. ``agent_ids`` is the
-    optional four-power slot mapping; missing keys leave ``agent_id`` null so
-    P1.4 can rebind once it loads the run.
-
-    Returns the staged rows in deterministic ``step_order`` ascending order so
-    callers can render the timeline without re-querying.
+    When ``dag_steps`` is provided (from ``compose_initial_workflow`` metadata)
+    it is preferred over the legacy 4-step default template.
     """
+    del yaml_text  # kept for call-site compatibility / future checksums
     agent_ids = agent_ids or {}
+    templates: list[dict] = list(dag_steps) if dag_steps else list(_DEFAULT_DAG_STEPS)
     rows: list[WorkflowRunStep] = []
-    for template in _DEFAULT_DAG_STEPS:
-        step_key = str(template["step_key"])
-        agent_id = _agent_id_for_step(step_key, agent_ids)
+    for template in templates:
+        step_key = str(template.get("step_key") or template.get("step_id") or "")
+        agent_id = template.get("agent_id")
+        if not isinstance(agent_id, uuid.UUID):
+            agent_id = _agent_id_for_step(step_key, agent_ids)
         row = WorkflowRunStep(
             id=uuid.uuid4(),
             tenant_id=workflow.tenant_id,
             workflow_id=workflow.id,
             step_key=step_key,
-            step_order=int(template["step_order"]),
-            role_path=str(template["role_path"]),
-            agent_id=agent_id,
-            task_summary=str(template["task_summary"]),
-            output_var=str(template["output_var"]) if template.get("output_var") else None,
-            depends_on=list(template["depends_on"]),
+            step_order=int(template.get("step_order") or 0),
+            role_path=str(template.get("role_path") or ""),
+            agent_id=agent_id if isinstance(agent_id, uuid.UUID) else None,
+            task_summary=str(template.get("task_summary") or template.get("task") or ""),
+            output_var=str(template["output_var"])
+            if template.get("output_var")
+            else (str(template["output_variable"]) if template.get("output_variable") else None),
+            depends_on=list(template.get("depends_on") or []),
             acceptance_text=str(template["acceptance_text"]) if template.get("acceptance_text") else None,
             status="pending",
         )
@@ -121,16 +131,21 @@ def _agent_id_for_step(
     agent_ids: dict[str, uuid.UUID],
 ) -> uuid.UUID | None:
     """Map a DAG step to the corresponding power-slot Agent id, if any."""
-    mapping = {
-        "clarify": "scheduler",
-        "execute": "executor_0",
-        "review": "quality",
-    }
-    role_key = mapping.get(step_key)
-    if not role_key:
-        return None
-    value = agent_ids.get(role_key)
-    return value if isinstance(value, uuid.UUID) else None
+    if step_key == "clarify":
+        return agent_ids.get("scheduler")
+    if step_key == "review":
+        return agent_ids.get("quality")
+    if step_key == "deliver":
+        return agent_ids.get("delivery")
+    if step_key.startswith("execute"):
+        # Prefer exact role key suffix match, else executor_0 / first executor_*
+        suffix = step_key.removeprefix("execute_").replace("-", "_")
+        if suffix in agent_ids and isinstance(agent_ids[suffix], uuid.UUID):
+            return agent_ids[suffix]
+        for key, value in agent_ids.items():
+            if key.startswith("executor_") and isinstance(value, uuid.UUID):
+                return value
+    return None
 
 
 async def get_run_steps(

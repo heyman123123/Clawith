@@ -1105,6 +1105,12 @@ export default function Layout() {
                             </span>
                             <span className="sidebar-item-text">{t('nav.deliveryReview', '交付验收中心')}</span>
                         </NavLink>
+                        <NavLink to="/role-growth" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                🌱
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.roleGrowth', '角色成长中心')}</span>
+                        </NavLink>
                     </div>
                 </div>
                 

@@ -7,7 +7,7 @@ Five coverage areas required by the task spec:
 2. ``write_readme`` overwrites the stage README deterministically.
 3. ``sync_workflow_assets`` discovers new files, inserts rows for them
    and flags missing rows as ``orphaned`` in metadata.
-4. The four stage directories (00..03) actually exist after init and
+4. The eight bucket directories (00..03) actually exist after init and
    are visible to the scan.
 5. The light hooks (``quality_engine.run_quality_check`` +
    ``scheduler_tools.dispatch_task_to_role`` README refresh) stage
@@ -145,9 +145,9 @@ async def test_write_step_asset_writes_file_and_db_row(
         metadata={"kind": "executor"},
     )
 
-    expected_path = ao_output_root / str(workflow.id) / "01-执行" / "assets" / "artifact.md"
+    expected_path = ao_output_root / str(workflow.id) / "01-步骤输出" / "assets" / "artifact.md"
     assert result["abs_path"] == str(expected_path)
-    assert result["rel_path"] == "01-执行/assets/artifact.md"
+    assert result["rel_path"] == "01-步骤输出/assets/artifact.md"
     assert result["byte_size"] == len(body.encode("utf-8"))
     assert result["hash"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
     assert expected_path.read_text(encoding="utf-8") == body
@@ -186,7 +186,7 @@ async def test_write_step_asset_accepts_bytes_payload(
     )
 
     assert result["byte_size"] == len(payload)
-    assert (ao_output_root / str(workflow.id) / "03-交付" / "assets" / "artifact.bin").read_bytes() == payload
+    assert (ao_output_root / str(workflow.id) / "04-交付验收" / "assets" / "artifact.bin").read_bytes() == payload
 
 
 @pytest.mark.asyncio
@@ -220,7 +220,7 @@ async def test_write_readme_overwrites_stage_readme(
     ao_output_root: Path,
 ) -> None:
     workflow = await _ensure_workflow_row(sqlite_session)
-    readme_path = ao_output_root / str(workflow.id) / "00-需求" / "README.md"
+    readme_path = ao_output_root / str(workflow.id) / "00-工作流定义" / "README.md"
     # Pre-populate so we can prove the overwrite semantics.
     readme_path.parent.mkdir(parents=True, exist_ok=True)
     readme_path.write_text("stale body", encoding="utf-8")
@@ -238,7 +238,7 @@ async def test_write_readme_overwrites_stage_readme(
     assert result["hash"] == hashlib.sha256("# 需求\n\nv2 body".encode()).hexdigest()
 
     row = (
-        await sqlite_session.execute(select(WorkflowStepAsset).where(WorkflowStepAsset.rel_path == "00-需求/README.md"))
+        await sqlite_session.execute(select(WorkflowStepAsset).where(WorkflowStepAsset.rel_path == "00-工作流定义/README.md"))
     ).scalar_one()
     assert row.asset_metadata == {"kind": "readme"}
 
@@ -257,14 +257,14 @@ async def test_sync_workflow_assets_inserts_new_files_and_flags_orphans(
     step_id = uuid.uuid4()
 
     # Worker drops two artefacts directly to disk — DB is empty.
-    quality_dir = ao_output_root / str(workflow.id) / "02-质控" / "assets"
+    quality_dir = ao_output_root / str(workflow.id) / "03-质量管控" / "assets"
     quality_dir.mkdir(parents=True, exist_ok=True)
     (quality_dir / "step_report.md").write_text("# report\nscore: 92", encoding="utf-8")
     (quality_dir / "trace.json").write_text('{"steps": 2}', encoding="utf-8")
 
     # Pre-stage a row that points at a file we'll then delete to exercise
     # the orphan path.
-    orphan_rel = "01-执行/assets/will_vanish.md"
+    orphan_rel = "01-步骤输出/assets/will_vanish.md"
     orphan_path = ao_output_root / str(workflow.id) / orphan_rel
     orphan_path.parent.mkdir(parents=True, exist_ok=True)
     orphan_path.write_text("temp", encoding="utf-8")
@@ -291,8 +291,8 @@ async def test_sync_workflow_assets_inserts_new_files_and_flags_orphans(
     )
 
     inserted_paths = {row["rel_path"] for row in summary["inserted"]}
-    assert "02-质控/assets/step_report.md" in inserted_paths
-    assert "02-质控/assets/trace.json" in inserted_paths
+    assert "03-质量管控/assets/step_report.md" in inserted_paths
+    assert "03-质量管控/assets/trace.json" in inserted_paths
     assert summary["orphaned"] == [
         {
             "asset_id": str(orphan_row.id),
@@ -331,16 +331,25 @@ async def test_sync_workflow_assets_does_not_create_missing_stage_rows(
 # ---------------------------------------------------------------------------
 
 
-def test_workflow_root_creates_all_four_stage_dirs(
+def test_workflow_root_creates_all_eight_bucket_dirs(
     ao_output_root: Path,
 ) -> None:
-    """``workflow_root`` + ``scheduler_tools.init_workflow_dir`` together create 00..03."""
+    """``workflow_root`` + ``scheduler_tools.init_workflow_dir`` together create 00..07."""
     workflow_id = str(uuid.uuid4())
     scheduler_tools.init_workflow_dir(workflow_id)
 
     run_dir = ao_output_root / workflow_id
     assert run_dir.is_dir()
-    for stage in ("00-需求", "01-执行", "02-质控", "03-交付"):
+    for stage in (
+        "00-工作流定义",
+        "01-步骤输出",
+        "02-过程记录",
+        "03-质量管控",
+        "04-交付验收",
+        "05-技能档案",
+        "06-最终交付",
+        "07-历史迭代",
+    ):
         assert (run_dir / stage).is_dir(), f"missing stage {stage}"
         assert (run_dir / stage / "README.md").is_file()
 
@@ -372,12 +381,12 @@ async def test_run_quality_check_persists_feedback(
         step_id=step_id,
     )
 
-    feedback_path = ao_output_root / str(workflow.id) / "02-质控" / "feedback" / f"step_{step_id}.md"
+    feedback_path = ao_output_root / str(workflow.id) / "03-质量管控" / "feedback" / f"step_{step_id}.md"
     assert feedback_path.is_file()
     assert "92" in feedback_path.read_text(encoding="utf-8")
     row = (
         await sqlite_session.execute(
-            select(WorkflowStepAsset).where(WorkflowStepAsset.rel_path == f"02-质控/feedback/step_{step_id}.md")
+            select(WorkflowStepAsset).where(WorkflowStepAsset.rel_path == f"03-质量管控/feedback/step_{step_id}.md")
         )
     ).scalar_one()
     assert row.asset_metadata == {"score": 92}
@@ -388,7 +397,7 @@ async def test_dispatch_task_to_role_writes_execution_readme(
     monkeypatch: pytest.MonkeyPatch,
     ao_output_root: Path,
 ) -> None:
-    """``dispatch_task_to_role`` should refresh ``01-执行/README.md`` as a side-effect.
+    """``dispatch_task_to_role`` should refresh ``01-步骤输出/README.md`` as a side-effect.
 
     The hook must remain best-effort — even when the underlying
     ``_load_dispatch_scope`` lookup fails, the dispatch response should
@@ -455,7 +464,7 @@ async def test_dispatch_task_to_role_writes_execution_readme(
         )
 
     assert result["ok"] is True
-    readme = ao_output_root / str(workflow_id) / "01-执行" / "README.md"
+    readme = ao_output_root / str(workflow_id) / "01-步骤输出" / "README.md"
     assert readme.is_file(), "execution README should be written by the hook"
     body = readme.read_text(encoding="utf-8")
     assert "整理需求基线" in body

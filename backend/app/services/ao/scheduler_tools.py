@@ -246,21 +246,25 @@ def ao_resume_from_step(
 
 
 _STAGE_DIRECTORIES: tuple[tuple[str, str], ...] = (
-    ("00-需求", "需求基线、原始 brief 与 HR 决策记录"),
-    ("01-执行", "各执行角色的步骤产物（占位由运行期写入）"),
-    ("02-质控", "质量评审官的评分、整改记录与最终报告"),
-    ("03-交付", "交付协调官汇总的交付包、验收申请与历史"),
+    ("00-工作流定义", "AO YAML / 角色 / DAG 描述与 HR 决策基线"),
+    ("01-步骤输出", "各执行角色的步骤产物（占位由运行期写入）"),
+    ("02-过程记录", "消息 / 日志 / 决策快照"),
+    ("03-质量管控", "质量评审官的评分、整改记录与最终报告"),
+    ("04-交付验收", "验收轮次、双维评分与整改清单"),
+    ("05-技能档案", "沙箱运行 / 学习记录 / 技能绑定"),
+    ("06-最终交付", "客户交付物 / 正式包 / 索引"),
+    ("07-历史迭代", "上一版本的资产快照"),
 )
 
 
 def init_workflow_dir(workflow_id: str) -> dict:
-    """Create the four-stage asset directory scaffold and a top-level README."""
+    """Create the eight-bucket asset directory scaffold and a top-level README."""
     run_dir = _workflow_run_dir(workflow_id)
     readme = run_dir / "README.md"
     readme_lines = [
         f"# Workflow {workflow_id}",
         "",
-        "本目录由调度官首发触发器自动初始化，目录结构与需求 §4.7 对齐。",
+        "本目录由调度官首发触发器自动初始化，目录结构与需求 §4.7 八类资产对齐。",
         "",
         "| 子目录 | 用途 |",
         "|--------|------|",
@@ -278,6 +282,7 @@ def init_workflow_dir(workflow_id: str) -> dict:
         "ok": True,
         "workflow_id": workflow_id,
         "run_dir": str(run_dir),
+        "buckets": [name for name, _ in _STAGE_DIRECTORIES],
     }
 
 
@@ -327,6 +332,25 @@ class _DispatchScope:
     target_participant_id: uuid.UUID
 
 
+async def _resolve_group_session_id(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Return the earliest active ChatSession for ``group_id``, or None.
+
+    ``ProjectWorkflow`` does not store ``session_id``; dispatch and broadcasts
+    resolve the live session the same way as :func:`approval_node._resolve_active_session_id`.
+    """
+    from app.models.chat_session import ChatSession
+
+    return await db.scalar(
+        select(ChatSession.id)
+        .where(ChatSession.group_id == group_id, ChatSession.deleted_at.is_(None))
+        .order_by(ChatSession.created_at.asc())
+    )
+
+
 async def _load_dispatch_scope(
     db: AsyncSession,
     *,
@@ -349,9 +373,14 @@ async def _load_dispatch_scope(
     workflow = await db.scalar(
         select(ProjectWorkflow).where(ProjectWorkflow.id == workflow_id)
     )
-    if workflow is None or workflow.group_id is None or workflow.session_id is None:
+    if workflow is None or workflow.group_id is None:
         raise AOIntegrationError(
-            f"Workflow {workflow_id} is not ready to dispatch tasks: missing group/session."
+            f"Workflow {workflow_id} is not ready to dispatch tasks: missing group."
+        )
+    session_id = await _resolve_group_session_id(db, group_id=workflow.group_id)
+    if session_id is None:
+        raise AOIntegrationError(
+            f"Workflow {workflow_id} is not ready to dispatch tasks: missing session."
         )
     if workflow.group_leader_agent_id is None:
         raise AOIntegrationError(
@@ -362,9 +391,10 @@ async def _load_dispatch_scope(
         for participant in (
             await db.execute(
                 select(Participant).where(
+                    Participant.type == "agent",
                     Participant.ref_id.in_(
                         [workflow.group_leader_agent_id, target_agent_id]
-                    )
+                    ),
                 )
             )
         )
@@ -387,7 +417,7 @@ async def _load_dispatch_scope(
         tenant_id=workflow.tenant_id,
         workflow_id=workflow_id,
         group_id=workflow.group_id,
-        session_id=workflow.session_id,
+        session_id=session_id,
         scheduler_agent_id=workflow.group_leader_agent_id,
         creator_id=creator,
         sender_participant_id=scheduler_participant.id,
@@ -538,7 +568,7 @@ async def dispatch_task_to_role(
         project_task_dispatch=False,
     )
 
-    # P2.3 light hook: refresh the ``01-执行/README.md`` so the group
+    # P2.3 light hook: refresh the ``01-步骤输出/README.md`` so the group
     # workspace always reflects who is currently on the bench for this
     # step.  Failure is non-fatal — dispatching the task matters more
     # than the audit row.
@@ -573,7 +603,9 @@ async def dispatch_task_to_role(
         "task_id": str(task.id),
         "step_id": str(step_row_id),
         "step_key": resolved_step_key,
+        "tenant_id": str(scope.tenant_id),
         "group_id": str(scope.group_id),
+        "session_id": str(scope.session_id),
         "message_id": str(intake.message.id),
         "dispatch_kind": intake.dispatch_kind,
         "run_dir": init_result.get("run_dir"),
@@ -600,7 +632,6 @@ async def _load_group_scope(
     sender, so we fall back to the group owner Agent. ``session_id`` is
     the active primary session of the group.
     """
-    from app.models.chat_session import ChatSession
     from app.models.group import Group
     from app.models.participant import Participant
 
@@ -624,18 +655,13 @@ async def _load_group_scope(
         raise AOIntegrationError(
             f"Scheduler Agent {scheduler_agent_id} has no Participant row; cannot send."
         )
-    session = await db.scalar(
-        select(ChatSession).where(
-            ChatSession.group_id == group_id,
-            ChatSession.deleted_at.is_(None),
-        ).order_by(ChatSession.created_at.asc())
-    )
-    if session is None:
+    session_id = await _resolve_group_session_id(db, group_id=group_id)
+    if session_id is None:
         raise AOIntegrationError(f"Group {group_id} has no active chat session.")
     return _GroupScope(
         tenant_id=group.tenant_id,
         group_id=group_id,
-        session_id=session.id,
+        session_id=session_id,
         sender_participant_id=sender.id,
     )
 
@@ -674,10 +700,45 @@ async def send_channel_message(group_id: str, content: str) -> dict:
     )
     return {
         "ok": True,
+        "tenant_id": str(scope.tenant_id),
         "group_id": str(scope.group_id),
+        "session_id": str(scope.session_id),
         "message_id": str(intake.message.id),
         "dispatch_kind": intake.dispatch_kind,
     }
+
+
+async def publish_enqueued_group_message_after_commit(payload: dict | None) -> bool:
+    """Push a durable AO-enqueued group message to live Group sockets.
+
+    Must run *after* the caller's DB commit. Failures are logged and ignored —
+    cursor backfill remains authoritative.
+    """
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return False
+    body = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+    if not isinstance(body, dict):
+        return False
+    try:
+        tenant_id = uuid.UUID(str(body["tenant_id"]))
+        session_id = uuid.UUID(str(body["session_id"]))
+        message_id = uuid.UUID(str(body["message_id"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    from app.database import async_session
+    from app.services.group_realtime import publish_stored_group_message
+
+    try:
+        return await publish_stored_group_message(
+            async_session,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            message_id=message_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — realtime must not fail the tool
+        logger.warning("[SchedulerTools] group realtime publish failed: {}", exc)
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

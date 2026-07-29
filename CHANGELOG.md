@@ -5,9 +5,33 @@ All notable changes to Clawith × Agency Orchestrator integration are documented
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — P8 Defaults & UI Polish
+## [Unreleased] — Gap closure (需求 §8)
 
 ### Added
+
+* **W1 工具桥**：`agent_tool_bridge.py` + `ao_builtin_tools.py`；§4.1 调度/质控/交付工具进入 `BUILTIN_TOOL_SEEDS` 与 `execute_tool`；硬越权校验。
+* **W1 角色绑工具**：`workflow_role_seeder` 清空假 `default_skills`，改为绑定真实 `AgentTool`。
+* **W2 DAG 多角色**：`workflow_composer` 生成 `clarify → execute×N → review → deliver`；`create_run_row` 接受 `dag_steps`。
+* **W2 AO 守卫**：`AOClient` 在 `AO_ENABLED=false` 时 fail-fast；`backend/vendor/ao/README.md` 说明如何安装 vendor。
+* **W3 资产 API**：`GET /api/ao/workflows/{id}/assets`；AssetBrowser 改打真实接口。
+* **W3 模板可启动**：`GET /workflow-metrics/templates/{id}/skeleton` + 前端「一键生成 YAML」。
+* **W4 token 审计**：`token_audit.py` 在 `collect_step_result` 后汇总到 `ProjectWorkflow.total_*_tokens`；`GET /api/ao/workflows/{id}/token-usage`。
+* **W4 角色成长中心**：`GET /api/ao/evolution/agents`、`GET/POST .../versions|rollback`；前端 `/role-growth`。
+* **W5 SLA 烟测**：`tests/test_ao_sla_smoke.py`（`@pytest.mark.sla`）。
+
+### Fixed
+
+* 交付验收轮次上限、`datetime.now(UTC)`、八类资产目录对齐、`run_quality_check_full`（上一会话）。
+* `workflow_composer._iter_executor_roles` 误把 `agent_ids` 全部键当作 power slot，现仅跳过 scheduler/quality/delivery。
+* **Alembic `add_delivery_review`**：`initial_schema` 的 `create_all` 已建表时再 `create_table` 触发 `DuplicateTableError`；改为按表/索引存在性幂等跳过。
+
+### Known limitations
+
+* **`placeholder_encrypt`**：仅开发占位 HMAC；灰度前必须替换为真实 KMS / 信封加密（见 `security_shell.py` docstring）。
+* **AO vendor**：仓库仅含 `backend/vendor/ao/README.md` 安装说明，未完整 vendor 源码；生产需 `AO_ENABLED=true` 并安装 CLI。
+* **技能自学准确率 ≥90% 离线评测、联邦技能市场、可视化 DAG 编辑器、飞书/钉钉深适配**：本闭环明确不做，记入后续迭代。
+
+### Changed (P8 carry-over)
 
 * `backend/app/services/llm/default_propagation.py` —
   `propagate_tenant_default_to_unassigned_agents(tenant_id)` 回填 `Agent.primary_model_id IS NULL`
@@ -29,21 +53,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 * `frontend/src/pages/SkillMarket.tsx` / `MetricsDashboard.tsx` /
-  `DeliveryReviewCenter.tsx` / `OfficialTemplates.tsx` / `AssetBrowser.tsx` —
+  `DeliveryReviewCenter.tsx` / `OfficialTemplates.tsx` / `AssetBrowser.tsx` /
+  `RoleGrowthCenter.tsx` —
   临时 `setSuccessMsg/setError` 替换为 `useToast()`;loading/empty/error 改用正式组件;
   卡片背景改 CSS 变量,支持深色模式。
-* `frontend/src/pages/AssetBrowser.tsx` — **关键修复**:移除第 57-77 行硬编码
-  `fetch('/api/ao/workflows/...')`(API 不存在),改走 `deliveryReviewApi.listRounds`,
-  404/失败 → `.catch(() => [])` 优雅降级,EmptyState 引导用户。
+* `frontend/src/pages/AssetBrowser.tsx` — 改走真实 `aoAssetsApi`。
 * `frontend/src/pages/Layout.tsx` — 本地硬编码 `/api` 的 `fetchJson` 替换为从
   `services/api` 导入的统一封装;顶部栏接入 `<ThemeToggle />` 切换深浅模式;
-  移除本地 theme state,改用 `useTheme()` hook(单数据源 + 跨标签同步)。
+  移除本地 theme state,改用 `useTheme()` hook(单数据源 + 跨标签同步)；侧栏增加角色成长中心。
 
 ### Tests
 
-* `backend/tests/test_default_model_propagation.py` — 6 个 pytest-asyncio case:
-  no-default / unassigned backfill / 已有值不动 / soft-deleted 跳过 /
-  default model 失效 / 全 tenant 聚合。全 pass。
+* `backend/tests/test_default_model_propagation.py` — 6 个 pytest-asyncio case。
+* `backend/tests/test_ao_token_audit.py` — 步骤 token 汇总与报告。
+* `backend/tests/test_ao_sla_smoke.py` — 规则质检 / DAG compose / 20 并发模板匹配 SLA。
+* `backend/tests/test_ao_agent_tool_bridge.py` — 工具桥越权（W1）。
 
 ## [Unreleased] — P7 Hardening
 

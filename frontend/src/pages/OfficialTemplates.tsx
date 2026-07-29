@@ -2,20 +2,21 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { officialTemplatesApi, OfficialTemplateItem } from '../services/api';
-import { EmptyState, ErrorBanner, LoadingState } from '../components/UI';
+import { EmptyState, ErrorBanner, LoadingState, PageHeader } from '../components/UI';
+import { useToast } from '../components/Toast/ToastProvider';
 
 /**
  * P7 模板库 — 渲染 30 个官方模板，HR/项目调度可以快速选用。
- * 与 :func:`backend.app.services.workflow_template_seeder.seed_official_workflow_templates`
- * 配套。
  */
 const OfficialTemplates: React.FC = () => {
     const { t } = useTranslation();
+    const toast = useToast();
     const [templates, setTemplates] = useState<OfficialTemplateItem[]>([]);
     const [keyword, setKeyword] = useState('');
     const [activeTags, setActiveTags] = useState<string[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
+    const [launchingSlug, setLaunchingSlug] = useState<string | null>(null);
 
     const fetchTemplates = React.useCallback(async () => {
         setLoading(true);
@@ -43,108 +44,128 @@ const OfficialTemplates: React.FC = () => {
     const filtered = useMemo(() => {
         const lower = keyword.trim().toLowerCase();
         return templates.filter((tpl) => {
-            const matchesKeyword = !lower
-                || tpl.title.toLowerCase().includes(lower)
-                || tpl.summary.toLowerCase().includes(lower)
-                || (tpl.keywords || []).some((k) => k.toLowerCase().includes(lower));
-            const matchesTag = !activeTags.length
-                || activeTags.every((tag) => (tpl.tags || []).includes(tag));
+            const matchesKeyword =
+                !lower ||
+                tpl.title.toLowerCase().includes(lower) ||
+                tpl.summary.toLowerCase().includes(lower) ||
+                (tpl.keywords || []).some((k) => k.toLowerCase().includes(lower));
+            const matchesTag =
+                !activeTags.length || activeTags.every((tag) => (tpl.tags || []).includes(tag));
             return matchesKeyword && matchesTag;
         });
     }, [templates, keyword, activeTags]);
 
     const toggleTag = (tag: string) => {
         setActiveTags((current) =>
-            current.includes(tag) ? current.filter((t) => t !== tag) : [...current, tag]
+            current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
         );
     };
 
-    return (
-        <div className="p-6 max-w-7xl mx-auto">
-            <header className="mb-6 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <div>
-                    <h1 className="text-2xl font-semibold">{t('templates.title', '官方模板库 (30)')}</h1>
-                    <p className="text-gray-500 text-sm">
-                        {t(
-                            'templates.subtitle',
-                            '需求 §8.7 — 30 个官方编排模板，覆盖产品/数据/运营/财务/合规/HR/法务 等场景。'
-                        )}
-                    </p>
-                </div>
-                <Link
-                    to="/hr-review"
-                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 self-start md:self-auto"
-                >
-                    {t('templates.to_hr', '回到 HR 入口')}
-                </Link>
-            </header>
+    const launchSkeleton = async (tpl: OfficialTemplateItem) => {
+        if (!tpl.id) {
+            toast.error(t('templates.missing_id', '模板缺少 id，无法生成 YAML'));
+            return;
+        }
+        setLaunchingSlug(tpl.slug);
+        try {
+            const skeleton = await officialTemplatesApi.skeleton(tpl.id);
+            await navigator.clipboard.writeText(skeleton.yaml_text);
+            toast.success(
+                t(
+                    'templates.skeleton_copied',
+                    `已生成可启动 YAML（${skeleton.step_count} 步）并复制到剪贴板`
+                )
+            );
+        } catch (err) {
+            toast.error((err as Error).message || t('templates.skeleton_failed', '生成 YAML 失败'));
+        } finally {
+            setLaunchingSlug(null);
+        }
+    };
 
-            <div className="flex flex-col gap-4 mb-6">
+    return (
+        <div className="ao-page">
+            <PageHeader
+                title={t('templates.title', '官方模板库 (30)')}
+                subtitle={t(
+                    'templates.subtitle',
+                    '需求 §8.7 — 30 个官方编排模板，覆盖产品/数据/运营/财务/合规/HR/法务 等场景。'
+                )}
+                actions={
+                    <Link to="/hr-review" className="btn btn-primary">
+                        {t('templates.to_hr', '回到 HR 入口')}
+                    </Link>
+                }
+            />
+
+            <div className="ao-stack" style={{ marginBottom: 20 }}>
                 <input
                     value={keyword}
                     onChange={(e) => setKeyword(e.target.value)}
                     placeholder={t('templates.search_placeholder', '搜索标题 / 关键词 / 摘要')}
-                    className="w-full border rounded-md px-3 py-2"
+                    className="ao-input-block form-input"
                 />
-                <div className="flex flex-wrap gap-2">
-                    {allTags.map((tag) => {
-                        const active = activeTags.includes(tag);
-                        return (
-                            <button
-                                key={tag}
-                                type="button"
-                                onClick={() => toggleTag(tag)}
-                                className={`px-3 py-1 rounded-full text-sm border ${
-                                    active ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'
-                                }`}
-                            >
-                                #{tag}
-                            </button>
-                        );
-                    })}
+                <div className="ao-inline-actions">
+                    {allTags.map((tag) => (
+                        <button
+                            key={tag}
+                            type="button"
+                            onClick={() => toggleTag(tag)}
+                            className={`ao-chip${activeTags.includes(tag) ? ' is-active' : ''}`}
+                        >
+                            #{tag}
+                        </button>
+                    ))}
                 </div>
             </div>
 
             {loading ? (
                 <LoadingState label={t('templates.loading', '加载模板…')} rows={6} />
             ) : error ? (
-                <ErrorBanner
-                    message={error}
-                    onRetry={fetchTemplates}
-                    tone="error"
-                />
+                <ErrorBanner message={error} onRetry={fetchTemplates} tone="error" />
             ) : filtered.length === 0 ? (
                 <EmptyState
                     title={t('templates.empty_title', '没有匹配的模板')}
                     description={t('templates.empty', '没有匹配的模板')}
                 />
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="ao-grid-3">
                     {filtered.map((tpl) => (
-                        <article
-                            key={tpl.slug}
-                            className="border rounded-lg p-4 shadow-sm flex flex-col gap-2"
-                            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-                        >
-                            <header className="flex items-center justify-between">
-                                <h2 className="text-lg font-medium">{tpl.title}</h2>
-                                <span className="text-xs text-gray-500">v{tpl.quality_threshold}</span>
+                        <article key={tpl.slug} className="ao-panel" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <header className="ao-toolbar" style={{ marginBottom: 0 }}>
+                                <h2 className="ao-section-title" style={{ margin: 0, fontSize: 16 }}>
+                                    {tpl.title}
+                                </h2>
+                                <span className="ao-badge">v{tpl.quality_threshold}</span>
                             </header>
-                            <p className="text-sm text-gray-600 line-clamp-3">{tpl.summary}</p>
-                            <div className="flex flex-wrap gap-1">
+                            <p className="ao-page-muted" style={{ margin: 0, lineHeight: 1.5 }}>
+                                {tpl.summary}
+                            </p>
+                            <div className="ao-inline-actions">
                                 {(tpl.tags || []).map((tag) => (
-                                    <span key={tag} className="text-xs px-2 py-0.5 rounded-full bg-gray-100">
+                                    <span key={tag} className="ao-chip ao-chip-static">
                                         #{tag}
                                     </span>
                                 ))}
                             </div>
-                            <div className="text-xs text-gray-500">
+                            <div className="ao-page-subtle">
                                 {t('templates.roles', '推荐角色')}: {(tpl.recommended_roles || []).join(' / ')}
                             </div>
-                            <div className="text-xs text-gray-400">
+                            <div className="ao-page-subtle">
                                 {t('templates.provider', '驱动')}: {tpl.ao_provider || 'default'} ·{' '}
                                 {tpl.ao_model || '—'}
                             </div>
+                            <button
+                                type="button"
+                                disabled={!tpl.id || launchingSlug === tpl.slug}
+                                onClick={() => launchSkeleton(tpl)}
+                                className="btn btn-primary"
+                                style={{ marginTop: 'auto', alignSelf: 'flex-start' }}
+                            >
+                                {launchingSlug === tpl.slug
+                                    ? t('templates.launching', '生成中…')
+                                    : t('templates.launch', '一键生成 YAML')}
+                            </button>
                         </article>
                     ))}
                 </div>

@@ -1,17 +1,13 @@
-"""P2.3 — workflow 00~03 资产目录自动写 + 扫描同步.
+"""P2.3 / P7 — workflow 八类资产目录自动写 + 扫描同步.
 
 The module is the single boundary for *writing* assets under
 ``{AO_OUTPUT_DIR}/<workflow_id>/<stage>/`` and for *mirroring* the file
-system back into the ``workflow_step_assets`` table.  The conventions:
+system back into the ``workflow_step_assets`` table.  The conventions
+(需求 §4.7):
 
-* Four stages: ``00-需求`` / ``01-执行`` / ``02-质控`` / ``03-交付``.
-* Each stage directory contains the same four sub-slot entries::
-
-      <stage>/
-        README.md       # 阶段说明，由调度官/执行位覆盖式写
-        summary.md      # 阶段汇总，由调度官写
-        assets/         # worker 落产物（任意文件名）
-        feedback.md     # 质控反馈，由质控官写
+* Eight buckets: ``00-工作流定义`` … ``07-历史迭代``.
+* Legacy writer keys (``requirement`` / ``execution`` / ``quality`` /
+  ``delivery``) map onto the canonical buckets via :data:`_STAGE_DIRS`.
 
 The :class:`Category` literal matches the migration column.  The mapping
 between Chinese directory names and the canonical English category
@@ -44,6 +40,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.config import get_settings
+from app.services.ao.asset_directory_enforcer import AssetCategory
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,12 +52,12 @@ Category = Literal["requirement", "execution", "quality", "delivery"]
 """Canonical stage key written into ``workflow_step_assets.category``."""
 
 _STAGE_DIRS: tuple[tuple[Category, str], ...] = (
-    ("requirement", "00-需求"),
-    ("execution", "01-执行"),
-    ("quality", "02-质控"),
-    ("delivery", "03-交付"),
+    ("requirement", AssetCategory.WORKFLOW_DEFINITION.value),
+    ("execution", AssetCategory.STEP_OUTPUT.value),
+    ("quality", AssetCategory.QUALITY_CONTROL.value),
+    ("delivery", AssetCategory.DELIVERY_REVIEW.value),
 )
-"""(category, on-disk directory name) mapping.  Mirrors ``scheduler_tools._STAGE_DIRECTORIES``."""
+"""(category, on-disk directory name) mapping.  Mirrors 需求 §4.7 via AssetCategory."""
 
 _STAGE_DIR_BY_CATEGORY: dict[Category, str] = {key: value for key, value in _STAGE_DIRS}
 

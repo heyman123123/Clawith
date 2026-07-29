@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import './i18n';
 import './index.css';
 import './styles/atlas.css';
+import './styles/ao-console.css';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { DialogProvider } from './components/Dialog/DialogProvider';

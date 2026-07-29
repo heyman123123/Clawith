@@ -2,14 +2,12 @@
 
 Curates the 30 official AO templates referenced in
 ``需求.md`` §4.4 + §4.6 + §8.7.  Each row is idempotent (a second
-``seed_official_workflow_templates`` call is a no-op) and uses
-``tenant_id=NULL`` so every tenant sees the catalog through a single
-read of ``workflow_templates``.
+``seed_official_workflow_templates`` call is a no-op).
 
-The catalog only sets the editorial metadata (slug / title / summary /
-tags / keywords / recommended roles / quality threshold / ao model
-hint).  Project provisioning still creates a per-tenant ``published``
-clone when the HR picks one of these via :func:`match_top_templates`.
+``workflow_templates.tenant_id`` is NOT NULL (FK to tenants), so startup
+seeds per active tenant via :func:`app.main` lifespan.  Tests may pass an
+explicit ``tenant_id``.  Project provisioning still creates a per-tenant
+``published`` clone when HR picks one via :func:`match_top_templates`.
 """
 
 from __future__ import annotations
@@ -349,9 +347,9 @@ async def seed_official_workflow_templates(
 ) -> int:
     """Idempotently upsert the 30 official rows.  Returns count of newly inserted rows.
 
-    When ``tenant_id`` is provided the rows are scoped to that tenant (used by
-    the test fixture).  The default ``None`` scope is reserved for shared /
-    global catalog rows once we add a tenant-aware view (P7 scope).
+    ``tenant_id`` is required for production seeds (column is NOT NULL).  The
+    optional ``None`` default remains only for callers that already validate
+    the target tenant; lifespan in ``main.py`` always passes a real id.
     """
 
     inserted = 0
