@@ -193,16 +193,26 @@ async def process_hr_group_agent_output(
 
 
 def _json_object(text: str) -> dict:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = (text or "").strip()
+    if not cleaned:
+        raise HrReviewError("HR 评审未返回内容，请重试")
+    # Drop common chain-of-thought wrappers before looking for JSON.
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<thinking>[\s\S]*?</thinking>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip()
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned, flags=re.IGNORECASE)
+    if fence:
+        cleaned = fence.group(1).strip()
+    elif cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
     start, end = cleaned.find("{"), cleaned.rfind("}")
     if start < 0 or end < start:
-        raise HrReviewError("HR 评审未返回有效 JSON，请重试")
+        raise HrReviewError("HR 评审未返回有效 JSON，请重试（可能被截断，请再试一次）")
     try:
         value = json.loads(cleaned[start : end + 1])
     except json.JSONDecodeError as exc:
-        raise HrReviewError("HR 评审返回的 JSON 格式无效，请重试") from exc
+        raise HrReviewError("HR 评审返回的 JSON 格式无效或被截断，请重试") from exc
     if not isinstance(value, dict):
         raise HrReviewError("HR 评审返回的 JSON 格式无效，请重试")
     return value
@@ -436,13 +446,14 @@ async def attach_proposals(
 
 
 def _team_building_system_prompt() -> str:
-    return """你是 HR Recruiter（招聘专员）。在与 HR Org Designer、HR Strategist、HR Secretary 讨论后，为用户项目输出至少 3 套不同的团队组建方案。
-每套方案必须包含 card_summary（短摘要）与 roles；每角色必须含 duties、soul（完整 soul.md 正文）、suggested_tools、suggested_permissions。
+    return """你是 HR Recruiter（招聘专员）。为用户项目输出至少 3 套不同的团队组建方案。
+每套方案必须包含 card_summary（短摘要）与 roles；每角色必须含 duties、soul、suggested_tools、suggested_permissions。
+soul 用简洁完整的 soul.md 正文即可（约 80-200 字），不要长篇大论。
 每套方案必须包含唯一项目群主（is_group_leader=true 且仅一位）。不要套用固定部门模板。
-只返回一个 JSON 对象，不要 Markdown，不要解释。格式：
+只返回一个 JSON 对象，不要 Markdown，不要解释，不要思考过程。格式：
 {"proposals":[
   {"id":"proposal_1","label":"方案名称","card_summary":"短摘要","roles":[
-    {"key":"english_snake_case","name":"岗位名称","duties":"职责与交付物","soul":"# 岗位\\n完整 soul.md 正文…","is_group_leader":true,
+    {"key":"english_snake_case","name":"岗位名称","duties":"职责与交付物","soul":"# 岗位\\n简洁 soul.md 正文…","is_group_leader":true,
      "suggested_tools":["group_write_workspace_file"],"suggested_permissions":{"scope_type":"company","access_level":"use"}}
   ]}
 ]}"""
@@ -491,8 +502,11 @@ async def generate_team_building_proposals(
         api_key=api_key,
         model=model.model,
         base_url=model.base_url,
-        timeout=float(model.request_timeout or 120),
+        timeout=float(model.request_timeout or 180),
     )
+    max_tokens = int(model.max_output_tokens or 16000)
+    if max_tokens < 8000:
+        max_tokens = 8000
     try:
         response = await client.complete(
             messages=[
@@ -503,7 +517,7 @@ async def generate_team_building_proposals(
                 ),
             ],
             temperature=0.2,
-            max_tokens=4000,
+            max_tokens=max_tokens,
         )
     except Exception as exc:
         raise HRPlanningError(
