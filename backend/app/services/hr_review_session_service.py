@@ -570,6 +570,7 @@ async def select_proposal(
     proposal_id: str,
     user: User,
     fallback_proposals: list | None = None,
+    send_kickoff: bool = True,
 ) -> dict:
     if user.tenant_id is None:
         raise HrReviewError("用户缺少租户")
@@ -626,6 +627,7 @@ async def select_proposal(
             project_name=project_name,
             requirements=requirements,
             roles=roles,
+            send_kickoff=send_kickoff,
         )
     except ProjectProvisioningError as exc:
         raise HrReviewError(str(exc)) from exc

@@ -43,6 +43,7 @@ class AttachTeamBuildingIn(BaseModel):
 class SelectProposalIn(BaseModel):
     proposal_id: str = Field(min_length=1, max_length=64)
     proposals: list | None = None
+    send_kickoff: bool = True
 
 
 class HrReviewSessionOut(BaseModel):
@@ -234,6 +235,7 @@ async def select_hr_proposal(
             proposal_id=body.proposal_id,
             user=current_user,
             fallback_proposals=body.proposals,
+            send_kickoff=body.send_kickoff,
         )
     except HrReviewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

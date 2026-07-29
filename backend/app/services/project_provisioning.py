@@ -271,8 +271,9 @@ async def provision_team_from_plan(
     requirements: str,
     roles: list[dict],
     template_key: str = "hr_generated",
+    send_kickoff: bool = True,
 ) -> dict:
-    """Create workflow, agents, execution group, decision group, and kickoff message."""
+    """Create workflow, agents, execution group, decision group, and optional kickoff."""
     tenant = await db.get(Tenant, tenant_id)
     default_model_id = await project_default_model_id(
         db,
@@ -392,19 +393,21 @@ async def provision_team_from_plan(
     from app.services import group_message_service
     from app.services.group_message_service import GroupMessageServiceError
 
-    try:
-        await group_message_service.enqueue_group_message(
-            db,
-            tenant_id=tenant_id,
-            group_id=group.id,
-            session_id=session.id,
-            sender_participant_id=human_participant.id,
-            content=wake_up_message,
-            mention_participant_ids=[leader_participant.id],
-            message_id=uuid.uuid4(),
-        )
-    except GroupMessageServiceError as exc:
-        raise ProjectProvisioningError(f"Project kickoff could not be created: {exc}") from exc
+    if send_kickoff:
+        try:
+            await group_message_service.enqueue_group_message(
+                db,
+                tenant_id=tenant_id,
+                group_id=group.id,
+                session_id=session.id,
+                sender_participant_id=human_participant.id,
+                content=wake_up_message,
+                mention_participant_ids=[leader_participant.id],
+                message_id=uuid.uuid4(),
+            )
+        except GroupMessageServiceError as exc:
+            raise ProjectProvisioningError(f"Project kickoff could not be created: {exc}") from exc
+        workflow.kickoff_sent_at = datetime.now(UTC)
 
     workflow.status = "active"
     workflow.updated_at = datetime.now(UTC)
