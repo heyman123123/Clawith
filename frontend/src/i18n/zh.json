@@ -1229,7 +1229,12 @@
       "temperatureDesc": "留空使用提供商默认值。o1/o3 推理模型通常需要 1.0",
       "deleteConfirm": "停用 {{name}}？现有数字员工和历史记录会保留模型引用，后续调用会自动选择其他可用模型。",
       "deleteDone": "模型已停用",
-      "deleteFailed": "删除模型失败"
+      "deleteFailed": "删除模型失败",
+      "defaultBadge": "员工默认",
+      "setAsDefault": "设为员工默认",
+      "setAsDefaultTitle": "未单独配置模型的数字员工将使用该模型",
+      "defaultSaved": "员工默认模型已更新",
+      "defaultSaveFailed": "更新员工默认模型失败"
     },
     "tools": {
       "title": "全局工具管理",

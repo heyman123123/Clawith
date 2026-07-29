@@ -14,6 +14,7 @@ from app.models.task import Task, TaskLog
 from app.services.agent_runtime.adapter import RuntimeCommandIntake
 from app.services.agent_runtime.config import decide_runtime_v2
 from app.services.agent_runtime.contracts import RunHandle, StartRunCommand
+from app.services.llm.model_resolution import resolve_active_agent_model
 
 settings = get_settings()
 
@@ -81,10 +82,13 @@ async def enqueue_task_runtime(
         )
     model_id = agent.primary_model_id
     if model_id is None:
-        raise TaskRuntimeIntakeError(
-            "agent_model_missing",
-            "Runtime Task Agent has no configured primary model",
-        )
+        model = await resolve_active_agent_model(db, agent)
+        if model is None:
+            raise TaskRuntimeIntakeError(
+                "agent_model_missing",
+                "Runtime Task Agent has no active primary, fallback, or tenant default model",
+            )
+        model_id = model.id
 
     context_cutoff: dict[str, str] | None = None
     if task.group_id is not None:

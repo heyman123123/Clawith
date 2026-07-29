@@ -37,6 +37,7 @@ from app.services.agent_runtime.tool_execution import (
     mark_tool_execution_succeeded,
 )
 from app.services import agent_directory
+from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.participant_identity import get_or_create_agent_participant
 
 
@@ -50,6 +51,19 @@ class A2ARuntimeError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+async def _resolve_target_model_id(db: AsyncSession, agent: Agent) -> uuid.UUID:
+    """Prefer agent primary, then fallback/tenant default via shared resolver."""
+    if agent.primary_model_id is not None:
+        return agent.primary_model_id
+    model = await resolve_active_agent_model(db, agent)
+    if model is None:
+        raise A2ARuntimeError(
+            "a2a_target_model_missing",
+            f"Agent {agent.name} has no active primary, fallback, or tenant default model",
+        )
+    return model.id
 
 
 @dataclass(frozen=True, slots=True)
@@ -570,11 +584,7 @@ async def enqueue_gateway_a2a_runtime(
             "a2a_target_unavailable",
             f"Agent {target_agent.name} is unavailable",
         )
-    if target_agent.primary_model_id is None:
-        raise A2ARuntimeError(
-            "a2a_target_model_missing",
-            f"Agent {target_agent.name} has no primary model",
-        )
+    target_model_id = await _resolve_target_model_id(db, target_agent)
     decision = decide_runtime_v2(
         agent_id=target_agent.id,
         source_type="a2a",
@@ -662,7 +672,7 @@ async def enqueue_gateway_a2a_runtime(
                 f"through the gateway. Source Agent: {source_agent.name}. Request: {message}"
             ),
             run_kind="delegated",
-            model_id=target_agent.primary_model_id,
+            model_id=target_model_id,
             origin_user_id=owner_user_id,
             origin_agent_id=source_agent.id,
             delivery_status="not_required",
@@ -829,11 +839,9 @@ class RuntimeA2AService:
                                 "runtime_disabled",
                                 "Durable Runtime is required for native A2A execution",
                             )
-                    if not is_openclaw and target.primary_model_id is None:
-                        raise A2ARuntimeError(
-                            "a2a_target_model_missing",
-                            f"Agent {target.name} has no primary model",
-                        )
+                        target_model_id = await _resolve_target_model_id(db, target)
+                    else:
+                        target_model_id = target.primary_model_id
 
                     await self._cycle_guard.ensure_delegation_allowed(
                         db,
@@ -931,7 +939,7 @@ class RuntimeA2AService:
                                 correlation_id=correlation_id,
                                 goal=_target_goal(source_agent, request),
                                 run_kind="delegated",
-                                model_id=target.primary_model_id,
+                                model_id=target_model_id,
                                 origin_user_id=owner_user_id,
                                 origin_agent_id=source_agent.id,
                                 parent_run_id=source_run.id,

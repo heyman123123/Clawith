@@ -1106,7 +1106,12 @@
       "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0",
       "deleteConfirm": "Disable {{name}}? Existing agents and history keep their model references; new calls will use another available model.",
       "deleteDone": "Model disabled",
-      "deleteFailed": "Failed to delete model"
+      "deleteFailed": "Failed to delete model",
+      "defaultBadge": "Employee default",
+      "setAsDefault": "Set as employee default",
+      "setAsDefaultTitle": "Digital employees without their own model will use this one",
+      "defaultSaved": "Employee default model updated",
+      "defaultSaveFailed": "Failed to update employee default model"
     },
     "tools": {
       "title": "Global Tool Management",

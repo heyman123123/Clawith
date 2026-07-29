@@ -182,10 +182,10 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
             invalidateModelCaches();
             qc.invalidateQueries({ queryKey: ['agents'] });
             qc.invalidateQueries({ queryKey: ['agent'] });
-            toast.success(t('enterprise.llm.defaultSaved', 'Default model updated'));
+            toast.success(t('enterprise.llm.defaultSaved', '员工默认模型已更新'));
         },
         onError: (err: any) => {
-            toast.error(t('enterprise.llm.defaultSaveFailed', 'Failed to update default model'), {
+            toast.error(t('enterprise.llm.defaultSaveFailed', '更新员工默认模型失败'), {
                 details: String(err?.message || err),
             });
         },
@@ -599,10 +599,10 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                         </span>
                                     )}
                                     {tenantForDefault?.default_model_id === m.id ? (
-                                        <span className="badge" style={{ background: 'rgba(34,197,94,0.15)', color: 'rgb(34,197,94)', fontSize: '10px' }}>{t('enterprise.llm.defaultBadge', '默认')}</span>
+                                        <span className="badge" style={{ background: 'rgba(34,197,94,0.15)', color: 'rgb(34,197,94)', fontSize: '10px' }}>{t('enterprise.llm.defaultBadge', '员工默认')}</span>
                                     ) : m.enabled ? (
-                                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setDefaultModel.mutate(m.id)} title={t('enterprise.llm.setAsDefaultTitle', 'Set as default for new agents')}>
-                                            {t('enterprise.llm.setAsDefault', '设为默认')}
+                                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setDefaultModel.mutate(m.id)} title={t('enterprise.llm.setAsDefaultTitle', '未单独配置模型的数字员工将使用该模型')}>
+                                            {t('enterprise.llm.setAsDefault', '设为员工默认')}
                                         </button>
                                     ) : null}
                                     <button className="btn btn-ghost" onClick={() => {

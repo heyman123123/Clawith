@@ -19,6 +19,7 @@ from app.services.agent_runtime.adapter import RuntimeCommandIntake
 from app.services.agent_runtime.config import decide_runtime_v2
 from app.services.agent_runtime.contracts import RunHandle, StartRunCommand
 from app.services.chat_session_service import ensure_primary_platform_session
+from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.participant_identity import get_or_create_agent_participant
 from app.services.trigger_runtime.executions import build_execution_runtime_trigger
 
@@ -260,11 +261,15 @@ async def enqueue_trigger_runtime(
             "agent_tenant_missing",
             "Runtime Trigger Agent has no tenant",
         )
-    if agent.primary_model_id is None:
-        raise TriggerRuntimeIntakeError(
-            "agent_model_missing",
-            "Runtime Trigger Agent has no primary model",
-        )
+    model_id = agent.primary_model_id
+    if model_id is None:
+        model = await resolve_active_agent_model(db, agent)
+        if model is None:
+            raise TriggerRuntimeIntakeError(
+                "agent_model_missing",
+                "Runtime Trigger Agent has no active primary, fallback, or tenant default model",
+            )
+        model_id = model.id
     if agent.is_expired or agent.status not in {"creating", "running", "idle"}:
         raise TriggerRuntimeIntakeError(
             "agent_unavailable",
@@ -306,7 +311,7 @@ async def enqueue_trigger_runtime(
             source_execution_id=execution_id,
             goal=f"处理触发器 {trigger.name}：{trigger.reason}".strip(),
             run_kind="background",
-            model_id=agent.primary_model_id,
+            model_id=model_id,
             delivery_status="pending" if delivery_target else "not_required",
             delivery_target=delivery_target,
             idempotency_key=f"start:trigger:{execution_id}",
