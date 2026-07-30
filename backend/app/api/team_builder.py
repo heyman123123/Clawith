@@ -27,10 +27,20 @@ class CreateTeamBuildDraftIn(BaseModel):
     requirement: str = Field(min_length=1, max_length=12_000)
     constraints: dict[str, Any] = Field(default_factory=dict)
     group_name: str | None = Field(default=None, max_length=200)
+    workflow_preset: str | None = Field(default="default", max_length=40)
 
 
 class PatchTeamBuildDraftIn(BaseModel):
     reviewed_plan: dict[str, Any]
+
+
+class ReviseTeamBuildDraftIn(BaseModel):
+    feedback: str = Field(min_length=1, max_length=8000)
+    scope: str = Field(default="both", pattern="^(members|workflow|both)$")
+
+
+class ApplyWorkflowPresetIn(BaseModel):
+    preset: str = Field(pattern="^(default|agile|product_research)$")
 
 
 class ConfirmTeamBuildDraftIn(BaseModel):
@@ -180,6 +190,7 @@ async def create_team_build_draft(
             requirement=body.requirement,
             constraints=body.constraints,
             group_name=body.group_name,
+            workflow_preset=body.workflow_preset or "default",
         )
         return await _draft_out(db, draft)
     except TeamBuilderError as exc:
@@ -207,6 +218,45 @@ async def patch_team_build_draft(
     try:
         draft = await service.update_draft(
             db, current_user=current_user, draft_id=draft_id, reviewed_plan=body.reviewed_plan
+        )
+        return await _draft_out(db, draft)
+    except TeamBuilderError as exc:
+        raise _error(exc) from exc
+
+
+@router.post("/{draft_id}/revise", response_model=TeamBuildDraftOut)
+async def revise_team_build_draft(
+    draft_id: uuid.UUID,
+    body: ReviseTeamBuildDraftIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        draft = await service.revise_draft(
+            db,
+            current_user=current_user,
+            draft_id=draft_id,
+            feedback=body.feedback,
+            scope=body.scope,
+        )
+        return await _draft_out(db, draft)
+    except TeamBuilderError as exc:
+        raise _error(exc) from exc
+
+
+@router.post("/{draft_id}/workflow-preset", response_model=TeamBuildDraftOut)
+async def apply_team_build_workflow_preset(
+    draft_id: uuid.UUID,
+    body: ApplyWorkflowPresetIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        draft = await service.apply_workflow_preset(
+            db,
+            current_user=current_user,
+            draft_id=draft_id,
+            preset=body.preset,
         )
         return await _draft_out(db, draft)
     except TeamBuilderError as exc:

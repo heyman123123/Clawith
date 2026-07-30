@@ -226,14 +226,25 @@ async def provision_job(db: AsyncSession, *, job_id: uuid.UUID) -> TeamProvision
     if job.group_id is None:
         job.status = "creating_group"
         creator = await get_or_create_user_participant(db, user.id, user.display_name, user.avatar_url)
+        plan = validate_team_plan(draft.reviewed_plan)
+        from app.services.team_builder.planning import team_workflow_to_workflow_plan
+
+        workflow_plan = None
+        if plan.workflow is not None:
+            workflow_plan = team_workflow_to_workflow_plan(
+                plan.workflow,
+                goal=plan.goal,
+                leader_participant_id=leader_participant_id,
+            )
         group = await group_chat_service.create_group(
             db,
             tenant_id=job.tenant_id,
             creator_participant_id=creator.id,
-            name=validate_team_plan(draft.reviewed_plan).group_name,
-            description=validate_team_plan(draft.reviewed_plan).goal,
+            name=plan.group_name,
+            description=plan.goal,
             member_participant_ids=participant_ids,
             leader_participant_id=leader_participant_id,
+            workflow_plan=workflow_plan,
         )
         session = await group_chat_service.create_group_session(
             db,

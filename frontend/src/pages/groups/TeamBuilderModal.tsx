@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconArrowLeft, IconCheck, IconRobot, IconSparkles, IconX } from '@tabler/icons-react';
 import { teamBuilderApi } from '../../services/teamBuilderApi';
-import type { TeamBuildDraft, TeamPlan, TeamPlanMember, TeamProvisionJob } from '../../types/teamBuilder';
+import type { TeamBuildDraft, TeamPlan, TeamPlanMember, TeamPlanWorkflowStage, TeamProvisionJob, TeamWorkflowPreset } from '../../types/teamBuilder';
 import { createRandomUUID } from '../../utils/randomUUID';
 
 const DRAFT_STORAGE_KEY = 'groups.teamBuilder.draftId';
@@ -47,6 +47,12 @@ const memberStatusLabel: Record<string, string> = {
     failed: '失败',
 };
 
+const WORKFLOW_PRESETS: Array<{ value: Exclude<TeamWorkflowPreset, 'custom'>; label: string }> = [
+    { value: 'default', label: '默认协作' },
+    { value: 'agile', label: '敏捷需求' },
+    { value: 'product_research', label: '产研协作' },
+];
+
 function clonePlan(plan: TeamPlan): TeamPlan {
     return structuredClone(plan);
 }
@@ -57,6 +63,8 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
     const [job, setJob] = useState<TeamProvisionJob | null>(null);
     const [requirement, setRequirement] = useState('');
     const [groupName, setGroupName] = useState('');
+    const [workflowPreset, setWorkflowPreset] = useState<Exclude<TeamWorkflowPreset, 'custom'>>('default');
+    const [reviseFeedback, setReviseFeedback] = useState('');
     const [editablePlan, setEditablePlan] = useState<TeamPlan | null>(null);
     const [showAdvancedJson, setShowAdvancedJson] = useState(false);
     const [planText, setPlanText] = useState('');
@@ -146,6 +154,29 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
         });
     };
 
+    const updateStage = (stageKey: string, patch: Partial<TeamPlanWorkflowStage>) => {
+        setEditablePlan((prev) => {
+            if (!prev?.workflow) return prev;
+            return {
+                ...prev,
+                workflow: {
+                    ...prev.workflow,
+                    preset: 'custom',
+                    stages: prev.workflow.stages.map((stage) =>
+                        stage.key === stageKey ? { ...stage, ...patch } : stage,
+                    ),
+                },
+            };
+        });
+    };
+
+    const applyPlanUpdate = (nextDraft: TeamBuildDraft) => {
+        setDraft(nextDraft);
+        const nextPlan = nextDraft.reviewed_plan ?? nextDraft.generated_plan;
+        setEditablePlan(nextPlan ? clonePlan(nextPlan) : null);
+        setPlanText(nextPlan ? JSON.stringify(nextPlan, null, 2) : '');
+    };
+
     const syncPlanTextFromCards = () => {
         if (!editablePlan) return;
         setPlanText(JSON.stringify(editablePlan, null, 2));
@@ -159,11 +190,9 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
             const nextDraft = await teamBuilderApi.createDraft({
                 requirement: requirement.trim(),
                 group_name: groupName.trim() || undefined,
+                workflow_preset: workflowPreset,
             });
-            setDraft(nextDraft);
-            const nextPlan = nextDraft.reviewed_plan ?? nextDraft.generated_plan;
-            setEditablePlan(nextPlan ? clonePlan(nextPlan) : null);
-            setPlanText(nextPlan ? JSON.stringify(nextPlan, null, 2) : '');
+            applyPlanUpdate(nextDraft);
             setShowAdvancedJson(false);
             persistDraft(nextDraft.id);
             if (nextDraft.status !== 'ready') {
@@ -171,6 +200,41 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
             }
         } catch (createError: any) {
             setError(createError?.message ?? t('groups.teamBuilderPlanFailed', '方案生成失败，请稍后重试'));
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const reviseDraft = async () => {
+        if (!draft || !reviseFeedback.trim() || submitting) return;
+        setSubmitting(true);
+        setError(null);
+        try {
+            if (editablePlan) {
+                await teamBuilderApi.updateDraft(draft.id, editablePlan);
+            }
+            const nextDraft = await teamBuilderApi.reviseDraft(draft.id, reviseFeedback.trim(), 'both');
+            applyPlanUpdate(nextDraft);
+            setReviseFeedback('');
+            persistDraft(nextDraft.id);
+        } catch (reviseError: any) {
+            setError(reviseError?.message ?? t('groups.teamBuilderReviseFailed', 'AI 调整方案失败'));
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const applyPreset = async (preset: Exclude<TeamWorkflowPreset, 'custom'>) => {
+        if (!draft || submitting) return;
+        setSubmitting(true);
+        setError(null);
+        try {
+            const nextDraft = await teamBuilderApi.applyWorkflowPreset(draft.id, preset);
+            applyPlanUpdate(nextDraft);
+            setWorkflowPreset(preset);
+            persistDraft(nextDraft.id);
+        } catch (presetError: any) {
+            setError(presetError?.message ?? t('groups.teamBuilderPresetFailed', '切换工作流模板失败'));
         } finally {
             setSubmitting(false);
         }
@@ -348,6 +412,78 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
                             </div>
                         ))}
                     </div>
+                    <div className="team-builder-plan-summary">
+                        <label className="team-builder-plan-label">
+                            {t('groups.teamBuilderWorkflow', '工作流')}
+                            {(editablePlan?.workflow ?? plan.workflow) && (
+                                <span style={{ marginLeft: 8, opacity: 0.7 }}>
+                                    {(editablePlan?.workflow ?? plan.workflow)?.name}
+                                    {' · '}
+                                    {(editablePlan?.workflow ?? plan.workflow)?.preset}
+                                </span>
+                            )}
+                        </label>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                            {WORKFLOW_PRESETS.map((item) => (
+                                <button
+                                    key={item.value}
+                                    type="button"
+                                    className="btn btn-sm"
+                                    disabled={submitting}
+                                    onClick={() => void applyPreset(item.value)}
+                                >
+                                    {item.label}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="team-builder-role-cards">
+                            {(editablePlan?.workflow?.stages ?? plan.workflow?.stages ?? []).map((stage) => (
+                                <div className="team-builder-role-card" key={stage.key}>
+                                    <label className="team-builder-plan-label">{t('groups.teamBuilderStageTitle', '阶段')}</label>
+                                    <input
+                                        className="input"
+                                        value={stage.title}
+                                        onChange={(event) => updateStage(stage.key, { title: event.target.value })}
+                                    />
+                                    <label className="team-builder-plan-label">{t('groups.teamBuilderStageGoal', '阶段目标')}</label>
+                                    <textarea
+                                        className="team-builder-requirement"
+                                        rows={2}
+                                        value={stage.goal}
+                                        onChange={(event) => updateStage(stage.key, { goal: event.target.value })}
+                                    />
+                                    <label className="team-builder-plan-label" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={stage.requires_approval}
+                                            onChange={(event) => updateStage(stage.key, { requires_approval: event.target.checked })}
+                                        />
+                                        {t('groups.teamBuilderStageApproval', '需要决策者确认')}
+                                    </label>
+                                </div>
+                            ))}
+                        </div>
+                        <label className="team-builder-plan-label" htmlFor="team-builder-revise">
+                            {t('groups.teamBuilderRevise', '用 AI 调整方案')}
+                        </label>
+                        <textarea
+                            id="team-builder-revise"
+                            className="team-builder-requirement"
+                            rows={2}
+                            value={reviseFeedback}
+                            onChange={(event) => setReviseFeedback(event.target.value)}
+                            placeholder={t('groups.teamBuilderRevisePlaceholder', '例如：把阶段改成调研→方案→交付，并增加一个测试角色')}
+                        />
+                        <button
+                            type="button"
+                            className="btn btn-sm"
+                            style={{ marginTop: 8 }}
+                            disabled={!reviseFeedback.trim() || submitting}
+                            onClick={() => void reviseDraft()}
+                        >
+                            {submitting ? t('common.loading', '加载中...') : t('groups.teamBuilderReviseApply', 'AI 调整')}
+                        </button>
+                    </div>
                     <button
                         type="button"
                         className="team-builder-advanced-toggle"
@@ -377,6 +513,19 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
                         {t('groups.teamBuilderName', '团队名称（可选）')}
                     </label>
                     <input id="team-builder-name" className="input" value={groupName} onChange={(event) => setGroupName(event.target.value)} />
+                    <label className="team-builder-plan-label" htmlFor="team-builder-preset">
+                        {t('groups.teamBuilderWorkflowPreset', '工作流模板')}
+                    </label>
+                    <select
+                        id="team-builder-preset"
+                        className="input"
+                        value={workflowPreset}
+                        onChange={(event) => setWorkflowPreset(event.target.value as Exclude<TeamWorkflowPreset, 'custom'>)}
+                    >
+                        {WORKFLOW_PRESETS.map((item) => (
+                            <option key={item.value} value={item.value}>{item.label}</option>
+                        ))}
+                    </select>
                     <label className="team-builder-plan-label" htmlFor="team-builder-requirement">
                         {t('groups.teamBuilderRequirement', '需求')}
                     </label>

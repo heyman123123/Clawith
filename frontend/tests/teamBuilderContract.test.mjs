@@ -14,11 +14,17 @@ const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 test('team builder uses the durable draft and job endpoints with an idempotency key', () => {
   assert.match(api, /const root = '\/team-build-drafts'/);
   assert.match(api, /createDraft:[\s\S]*?fetchJson/);
+  assert.match(api, /workflow_preset/);
+  assert.match(api, /reviseDraft:[\s\S]*?\/revise/);
+  assert.match(api, /applyWorkflowPreset:[\s\S]*?\/workflow-preset/);
   assert.match(api, /updateDraft:[\s\S]*?reviewed_plan/);
   assert.match(api, /confirmDraft:[\s\S]*?plan_version[\s\S]*?idempotency_key/);
   assert.match(api, /getJob:[\s\S]*?\/jobs\//);
   assert.match(modal, /createRandomUUID\(\)/);
   assert.match(modal, /POLL_INTERVAL_MS/);
+  assert.match(modal, /workflowPreset/);
+  assert.match(modal, /reviseDraft/);
+  assert.match(modal, /teamBuilderWorkflow/);
 });
 
 test('the builder recovers durable draft and job IDs across refreshes', () => {

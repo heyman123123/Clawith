@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.team_builder import TeamBuildDraft, TeamProvisionJob, TeamProvisionMember
 from app.models.user import User
 from app.services.team_builder.errors import TeamBuilderError
-from app.services.team_builder.planning import generate_team_plan, validate_team_plan
+from app.services.team_builder.planning import (
+    generate_team_plan,
+    revise_team_plan,
+    validate_team_plan,
+    workflow_from_preset,
+)
 
 
 def _now() -> datetime:
@@ -49,14 +54,16 @@ async def create_draft(
     requirement: str,
     constraints: dict,
     group_name: str | None,
+    workflow_preset: str = "default",
 ) -> TeamBuildDraft:
     if current_user.tenant_id is None:
         raise TeamBuilderError("tenant_required", "A tenant is required")
+    preset = workflow_preset if workflow_preset in {"default", "agile", "product_research"} else "default"
     draft = TeamBuildDraft(
         tenant_id=current_user.tenant_id,
         creator_user_id=current_user.id,
         requirement=_require_requirement(requirement),
-        constraints=constraints,
+        constraints={**constraints, "workflow_preset": preset},
         status="generating",
     )
     db.add(draft)
@@ -69,6 +76,7 @@ async def create_draft(
             requirement=draft.requirement,
             constraints=constraints,
             group_name=group_name,
+            workflow_preset=preset,
         )
     except TeamBuilderError as exc:
         draft.status = "invalid"
@@ -80,6 +88,67 @@ async def create_draft(
     draft.generated_plan = payload
     draft.reviewed_plan = payload
     draft.status = "ready"
+    await db.flush()
+    return draft
+
+
+async def revise_draft(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    draft_id: uuid.UUID,
+    feedback: str,
+    scope: str = "both",
+) -> TeamBuildDraft:
+    draft = await get_draft(db, current_user=current_user, draft_id=draft_id, lock=True)
+    if draft.status not in {"ready", "invalid"}:
+        raise TeamBuilderError("team_draft_not_editable", "Team draft cannot be edited in its current state")
+    if not isinstance(draft.reviewed_plan, dict):
+        raise TeamBuilderError("team_plan_missing", "Team draft has no reviewed plan")
+    revise_scope = scope if scope in {"members", "workflow", "both"} else "both"
+    current = validate_team_plan(draft.reviewed_plan)
+    if current_user.tenant_id is None:
+        raise TeamBuilderError("tenant_required", "A tenant is required")
+    revised = await revise_team_plan(
+        db,
+        tenant_id=current_user.tenant_id,
+        user=current_user,
+        current_plan=current,
+        requirement=draft.requirement,
+        feedback=feedback,
+        scope=revise_scope,  # type: ignore[arg-type]
+    )
+    draft.reviewed_plan = revised.model_dump(mode="json")
+    draft.plan_version += 1
+    draft.confirmed_plan_version = None
+    draft.confirmed_at = None
+    draft.status = "ready"
+    draft.error_code = None
+    draft.error_message = None
+    await db.flush()
+    return draft
+
+
+async def apply_workflow_preset(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    draft_id: uuid.UUID,
+    preset: str,
+) -> TeamBuildDraft:
+    draft = await get_draft(db, current_user=current_user, draft_id=draft_id, lock=True)
+    if draft.status not in {"ready", "invalid"}:
+        raise TeamBuilderError("team_draft_not_editable", "Team draft cannot be edited in its current state")
+    if not isinstance(draft.reviewed_plan, dict):
+        raise TeamBuilderError("team_plan_missing", "Team draft has no reviewed plan")
+    plan = validate_team_plan(draft.reviewed_plan)
+    kind = preset if preset in {"default", "agile", "product_research"} else "default"
+    updated = plan.model_copy(update={"workflow": workflow_from_preset(kind, goal=plan.goal)})
+    draft.reviewed_plan = updated.model_dump(mode="json")
+    draft.plan_version += 1
+    draft.status = "ready"
+    draft.error_code = None
+    draft.error_message = None
     await db.flush()
     return draft
 

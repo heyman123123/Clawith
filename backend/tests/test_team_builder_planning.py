@@ -17,6 +17,22 @@ def test_fallback_plan_has_one_new_leader_and_public_delegation() -> None:
     assert len(leaders) == 1
     assert leaders[0].source == "new"
     assert plan.delegations[0].from_member_key == leaders[0].member_key
+    assert plan.workflow is not None
+    assert len(plan.workflow.stages) >= 2
+
+
+def test_fallback_plan_respects_workflow_preset() -> None:
+    plan = fallback_team_plan("准备一个产品发布", workflow_preset="agile")
+    assert plan.workflow is not None
+    assert plan.workflow.preset == "agile"
+
+
+def test_validate_team_plan_attaches_default_workflow_when_missing() -> None:
+    payload = fallback_team_plan("准备一个产品发布").model_dump(mode="json")
+    del payload["workflow"]
+    plan = validate_team_plan(payload)
+    assert plan.workflow is not None
+    assert plan.workflow.preset == "default"
 
 
 def test_team_plan_rejects_multiple_leaders() -> None:

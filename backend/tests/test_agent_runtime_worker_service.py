@@ -49,6 +49,7 @@ from app.services.agent_runtime.worker_service import (
     running_runtime_worker_context,
     runtime_worker_context,
 )
+from app.services.group_run_resume.completion import GroupRunFailureRecoveryHandler
 
 
 def _settings() -> Settings:
@@ -323,6 +324,7 @@ def test_component_builder_installs_current_agent_and_planning_graphs() -> None:
         OnboardingRuntimeCompletionHandler,
         A2ARuntimeCompletionHandler,
         SchedulingLaneCompletionHandler,
+        GroupRunFailureRecoveryHandler,
     ]
     checkpoint_handlers = components.worker._post_checkpoint_handler._checkpoint_handlers
     assert [type(handler) for handler in checkpoint_handlers] == [

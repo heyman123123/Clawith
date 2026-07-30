@@ -383,6 +383,7 @@ async def create_group(
     description: str | None = None,
     member_participant_ids: Sequence[uuid.UUID] = (),
     leader_participant_id: uuid.UUID | None = None,
+    workflow_plan: object | None = None,
 ) -> Group:
     """Create a group and its initial manager without owning the transaction."""
     normalized_name = _required_text(
@@ -468,19 +469,30 @@ async def create_group(
     await db.flush()
     # Every newly created group starts with an evidence-driven lifecycle.  This
     # stays in the caller transaction so a group can never be observed without
-    # its default workflow after a successful create.
-    from app.services.group_workflow.service import create_default_workflow
+    # a workflow after a successful create.
+    from app.services.group_workflow.contracts import WorkflowPlan
+    from app.services.group_workflow.service import create_default_workflow, create_workflow
 
-    await create_default_workflow(
-        db,
-        tenant_id=tenant_id,
-        group_id=group.id,
-        # Ordinary manually-created groups have no Agent leader yet; their
-        # creator still owns the initial workflow instead of leaving every
-        # default item unassigned. Team provisioning supplies its Agent leader.
-        leader_participant_id=leader_participant_id or creator_participant_id,
-        goal=description or normalized_name,
-    )
+    owner_id = leader_participant_id or creator_participant_id
+    if isinstance(workflow_plan, WorkflowPlan):
+        await create_workflow(
+            db,
+            tenant_id=tenant_id,
+            group_id=group.id,
+            leader_participant_id=owner_id,
+            plan=workflow_plan,
+        )
+    else:
+        await create_default_workflow(
+            db,
+            tenant_id=tenant_id,
+            group_id=group.id,
+            # Ordinary manually-created groups have no Agent leader yet; their
+            # creator still owns the initial workflow instead of leaving every
+            # default item unassigned. Team provisioning supplies its Agent leader.
+            leader_participant_id=owner_id,
+            goal=description or normalized_name,
+        )
     return group
 
 

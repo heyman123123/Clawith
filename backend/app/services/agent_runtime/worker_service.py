@@ -85,6 +85,7 @@ from app.services.agent_runtime.session_context_completion import (
     SessionContextCompletionHandler,
 )
 from app.services.agent_runtime.task_completion import TaskRuntimeCompletionHandler
+from app.services.group_run_resume.completion import GroupRunFailureRecoveryHandler
 from app.services.agent_runtime.tool_step_service import RuntimeToolStepService
 from app.services.agent_runtime.tool_result_store import (
     ToolResultReconcileResult,
@@ -310,6 +311,7 @@ def build_runtime_worker_components(
             OnboardingRuntimeCompletionHandler(session_factory=session_factory),
             A2ARuntimeCompletionHandler(session_factory=session_factory),
             SchedulingLaneCompletionHandler(session_factory=session_factory),
+            GroupRunFailureRecoveryHandler(session_factory=session_factory),
         ),
     )
     resolved_claimant = claimant or runtime_worker_claimant()

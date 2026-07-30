@@ -49,6 +49,29 @@ class TeamPlanDelegation(BaseModel):
     instruction: str = Field(min_length=1, max_length=1000)
 
 
+class TeamPlanWorkflowStage(BaseModel):
+    key: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    title: str = Field(min_length=1, max_length=200)
+    goal: str = Field(min_length=1, max_length=2000)
+    requires_approval: bool = False
+
+
+class TeamPlanWorkflow(BaseModel):
+    preset: Literal["default", "agile", "product_research", "custom"] = "default"
+    name: str = Field(min_length=1, max_length=200)
+    stages: list[TeamPlanWorkflowStage] = Field(min_length=2, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_stages(self) -> TeamPlanWorkflow:
+        keys = [stage.key for stage in self.stages]
+        if len(set(keys)) != len(keys):
+            raise ValueError("workflow stage keys must be unique")
+        for stage in self.stages:
+            if stage.requires_approval and not stage.goal.strip():
+                raise ValueError(f"approval stage {stage.key} requires a goal")
+        return self
+
+
 class TeamPlan(BaseModel):
     group_name: str = Field(min_length=1, max_length=200)
     goal: str = Field(min_length=1, max_length=4000)
@@ -56,6 +79,7 @@ class TeamPlan(BaseModel):
     phases: list[str] = Field(min_length=1, max_length=20)
     members: list[TeamPlanMember] = Field(min_length=1, max_length=20)
     delegations: list[TeamPlanDelegation] = Field(default_factory=list, max_length=100)
+    workflow: TeamPlanWorkflow | None = None
 
     @model_validator(mode="after")
     def validate_roster(self) -> TeamPlan:
@@ -68,7 +92,68 @@ class TeamPlan(BaseModel):
         for delegation in self.delegations:
             if delegation.from_member_key not in member_keys or delegation.to_member_key not in member_keys:
                 raise ValueError("delegations must reference roster members")
+        if self.workflow is None:
+            object.__setattr__(self, "workflow", workflow_from_preset("default", goal=self.goal))
         return self
+
+
+def workflow_from_preset(
+    preset: Literal["default", "agile", "product_research"] | str,
+    *,
+    goal: str,
+) -> TeamPlanWorkflow:
+    from app.services.group_workflow.templates import preset_workflow
+
+    kind = preset if preset in {"default", "agile", "product_research"} else "default"
+    plan = preset_workflow(kind, goal=goal.strip() or "推进群协作目标")
+    return TeamPlanWorkflow(
+        preset=kind,  # type: ignore[arg-type]
+        name=plan.name,
+        stages=[
+            TeamPlanWorkflowStage(
+                key=stage.key,
+                title=stage.title,
+                goal=stage.goal,
+                requires_approval=stage.requires_approval,
+            )
+            for stage in plan.stages
+        ],
+    )
+
+
+def team_workflow_to_workflow_plan(
+    workflow: TeamPlanWorkflow,
+    *,
+    goal: str,
+    leader_participant_id: uuid.UUID | None,
+):
+    from app.services.group_workflow.contracts import WorkflowItemPlan, WorkflowPlan, WorkflowStagePlan
+
+    source = "ai" if workflow.preset == "custom" else workflow.preset
+    if source not in {"default", "agile", "product_research", "ai"}:
+        source = "ai"
+    stages: list[WorkflowStagePlan] = []
+    for stage in workflow.stages:
+        criteria = ["决策者确认交付满足当前阶段目标"] if stage.requires_approval else []
+        stages.append(
+            WorkflowStagePlan(
+                key=stage.key,
+                title=stage.title,
+                goal=stage.goal or goal,
+                requires_approval=stage.requires_approval,
+                acceptance_criteria=criteria,
+                owner_participant_id=leader_participant_id,
+                items=[
+                    WorkflowItemPlan(
+                        item_key=f"{stage.key}_deliverable",
+                        title=stage.title,
+                        description=stage.goal or goal,
+                        assignee_participant_id=leader_participant_id,
+                    )
+                ],
+            )
+        )
+    return WorkflowPlan(name=workflow.name, source=source, stages=stages)
 
 
 _SYSTEM_PROMPT = """You design durable Clawith AI teams. Return exactly one JSON object, no Markdown.
@@ -80,7 +165,15 @@ template_id, skill_ids, and is_leader. source is existing or new; exactly one me
 template_id and skill_ids must be real UUIDs from the platform, or null / []. Never invent slug names.
 Each delegation has from_member_key, to_member_key, and instruction. The leader receives all human
 directions and delegates work publicly to team members. Use existing only with an ID in candidate_agents.
-Create new members when no candidate fits. Keep the team as small as possible."""
+Create new members when no candidate fits. Keep the team as small as possible.
+Do not invent workflow stages here; the platform attaches a workflow template separately."""
+
+
+_REVISE_SYSTEM_PROMPT = """You revise an existing Clawith team plan. Return exactly one JSON object, no Markdown.
+Keep the same schema: group_name, goal, assumptions, phases, members, delegations, and optionally workflow.
+workflow has preset (default|agile|product_research|custom), name, and stages[{key,title,goal,requires_approval}].
+When changing workflow stages set preset to custom. Keep exactly one is_leader. Stage keys must be unique slug ids.
+Honor the revise_scope: members = only roster/delegations; workflow = only workflow; both = either."""
 
 
 def _as_text(value: object) -> str | None:
@@ -158,6 +251,33 @@ def _normalize_team_plan_payload(payload: object) -> object:
             normalized_members.append(row)
         data["members"] = normalized_members
 
+    workflow = data.get("workflow")
+    if not isinstance(workflow, dict) or not workflow.get("stages"):
+        goal_text = _as_text(data.get("goal")) or "推进群协作目标"
+        data["workflow"] = workflow_from_preset("default", goal=goal_text).model_dump(mode="json")
+    else:
+        stages = workflow.get("stages")
+        if isinstance(stages, list):
+            normalized_stages: list[dict] = []
+            for index, stage in enumerate(stages):
+                if not isinstance(stage, dict):
+                    continue
+                row = dict(stage)
+                key = _as_text(row.get("key")) or f"stage_{index + 1}"
+                row["key"] = re.sub(r"[^a-z0-9_-]+", "-", key.lower()).strip("-") or f"stage_{index + 1}"
+                row["title"] = _as_text(row.get("title")) or row["key"]
+                row["goal"] = _as_text(row.get("goal")) or (_as_text(data.get("goal")) or "推进")
+                row["requires_approval"] = bool(row.get("requires_approval"))
+                normalized_stages.append(row)
+            workflow = dict(workflow)
+            workflow["stages"] = normalized_stages
+            if not _as_text(workflow.get("name")):
+                workflow["name"] = "协作推进"
+            preset = str(workflow.get("preset") or "custom")
+            if preset not in {"default", "agile", "product_research", "custom"}:
+                workflow["preset"] = "custom"
+            data["workflow"] = workflow
+
     return data
 
 
@@ -182,11 +302,17 @@ def _parse_json(content: str | None) -> object:
         ) from exc
 
 
-def fallback_team_plan(requirement: str, *, group_name: str | None = None) -> TeamPlan:
+def fallback_team_plan(
+    requirement: str,
+    *,
+    group_name: str | None = None,
+    workflow_preset: str = "default",
+) -> TeamPlan:
     title = group_name.strip() if group_name and group_name.strip() else "新建协作团队"
+    goal = requirement.strip()
     return TeamPlan(
         group_name=title,
-        goal=requirement.strip(),
+        goal=goal,
         assumptions=["团队将根据群主的拆解公开协作，并在群内同步结果。"],
         phases=["群主澄清目标并拆解工作", "成员执行并公开反馈", "群主汇总结果与下一步"],
         members=[
@@ -213,6 +339,7 @@ def fallback_team_plan(requirement: str, *, group_name: str | None = None) -> Te
                 instruction="根据已确认目标完成具体交付，并公开报告结果与阻塞项。",
             )
         ],
+        workflow=workflow_from_preset(workflow_preset, goal=goal),
     )
 
 
@@ -224,6 +351,7 @@ async def generate_team_plan(
     requirement: str,
     constraints: dict,
     group_name: str | None = None,
+    workflow_preset: str = "default",
 ) -> TeamPlan:
     candidates_result = await db.execute(
         select(Agent)
@@ -243,7 +371,7 @@ async def generate_team_plan(
     try:
         model = await resolve_multi_agent_planning_model(db, tenant_id=tenant_id)
     except PlatformModelConfigurationError:
-        return fallback_team_plan(requirement, group_name=group_name)
+        return fallback_team_plan(requirement, group_name=group_name, workflow_preset=workflow_preset)
     request = {
         "requirement": requirement,
         "requested_group_name": group_name,
@@ -267,4 +395,75 @@ async def generate_team_plan(
         raise TeamBuilderError("team_plan_model_failed", "Team planning model call failed", retryable=True) from exc
     if completion.tool_calls:
         raise TeamBuilderError("team_plan_invalid", "Team planning model attempted to call a tool", retryable=True)
-    return validate_team_plan(_parse_json(completion.content))
+    plan = validate_team_plan(_parse_json(completion.content))
+    # Always attach/refresh template workflow unless caller already customized.
+    if plan.workflow is None or plan.workflow.preset != "custom":
+        plan = plan.model_copy(
+            update={"workflow": workflow_from_preset(workflow_preset, goal=plan.goal)}
+        )
+    return plan
+
+
+async def revise_team_plan(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user: User,
+    current_plan: TeamPlan,
+    requirement: str,
+    feedback: str,
+    scope: Literal["members", "workflow", "both"] = "both",
+) -> TeamPlan:
+    note = feedback.strip()
+    if not note:
+        raise TeamBuilderError("team_revise_feedback_invalid", "Feedback is required")
+    try:
+        model = await resolve_multi_agent_planning_model(db, tenant_id=tenant_id)
+    except PlatformModelConfigurationError as exc:
+        raise TeamBuilderError(
+            "team_plan_model_unavailable", "Planning model is not configured", retryable=True
+        ) from exc
+    request = {
+        "requirement": requirement,
+        "revise_scope": scope,
+        "feedback": note,
+        "current_plan": current_plan.model_dump(mode="json"),
+        "requesting_user": user.display_name,
+    }
+    try:
+        with ai_interaction_scope(tenant_id=tenant_id, source="team_planning_revise"):
+            completion = await complete_llm_once(
+                model,
+                [
+                    LLMMessage(role="system", content=_REVISE_SYSTEM_PROMPT),
+                    LLMMessage(role="user", content=json.dumps(request, ensure_ascii=False)),
+                ],
+                tools=None,
+                agent_id=None,
+                supports_vision=False,
+            )
+    except Exception as exc:
+        raise TeamBuilderError("team_plan_model_failed", "Team revise model call failed", retryable=True) from exc
+    if completion.tool_calls:
+        raise TeamBuilderError("team_plan_invalid", "Team revise model attempted to call a tool", retryable=True)
+    revised = validate_team_plan(_parse_json(completion.content))
+    if scope == "members":
+        revised = revised.model_copy(
+            update={
+                "workflow": current_plan.workflow,
+                "group_name": current_plan.group_name,
+                "goal": current_plan.goal,
+            }
+        )
+    elif scope == "workflow":
+        workflow = revised.workflow or current_plan.workflow
+        if workflow is not None and workflow.preset != "custom":
+            workflow = workflow.model_copy(update={"preset": "custom"})
+        revised = current_plan.model_copy(update={"workflow": workflow})
+    elif revised.workflow is not None and revised.workflow.preset != "custom":
+        # Feedback-driven edits should mark workflow as custom when stages diverge.
+        if revised.workflow.model_dump() != (current_plan.workflow.model_dump() if current_plan.workflow else None):
+            revised = revised.model_copy(
+                update={"workflow": revised.workflow.model_copy(update={"preset": "custom"})}
+            )
+    return revised

@@ -6,6 +6,8 @@ export type TeamProvisionJobStatus =
     | 'queued' | 'validating' | 'provisioning_agents' | 'waiting_for_agents'
     | 'creating_group' | 'activating' | 'completed' | 'retryable_failed' | 'failed';
 
+export type TeamWorkflowPreset = 'default' | 'agile' | 'product_research' | 'custom';
+
 export interface TeamPlanMember {
     member_key: string;
     name: string;
@@ -24,6 +26,19 @@ export interface TeamPlanDelegation {
     instruction: string;
 }
 
+export interface TeamPlanWorkflowStage {
+    key: string;
+    title: string;
+    goal: string;
+    requires_approval: boolean;
+}
+
+export interface TeamPlanWorkflow {
+    preset: TeamWorkflowPreset;
+    name: string;
+    stages: TeamPlanWorkflowStage[];
+}
+
 export interface TeamPlan {
     group_name: string;
     goal: string;
@@ -31,6 +46,7 @@ export interface TeamPlan {
     phases: string[];
     members: TeamPlanMember[];
     delegations: TeamPlanDelegation[];
+    workflow?: TeamPlanWorkflow | null;
 }
 
 export interface TeamBuildDraft {

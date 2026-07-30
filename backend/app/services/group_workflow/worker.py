@@ -312,6 +312,7 @@ async def dispatch_decision_actions_once() -> bool:
 async def start_group_workflow_worker(scan_seconds: float = 2.0) -> None:
     logger.info("Group workflow worker started")
     last_digest_scan = 0.0
+    last_resume_scan = 0.0
     while True:
         processed = await dispatch_leader_actions_once()
         processed = await dispatch_decision_actions_once() or processed
@@ -322,6 +323,14 @@ async def start_group_workflow_worker(scan_seconds: float = 2.0) -> None:
             except Exception:
                 logger.exception("Group workflow daily digest scan failed")
             last_digest_scan = now
+        if now - last_resume_scan >= _DIGEST_SCAN_SECONDS:
+            try:
+                from app.services.group_run_resume.service import process_due_resume_jobs_once
+
+                await process_due_resume_jobs_once()
+            except Exception:
+                logger.exception("Group run resume probe scan failed")
+            last_resume_scan = now
         await asyncio.sleep(0 if processed else scan_seconds)
 
 
