@@ -37,8 +37,8 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
         "As group leader, advance only by SOP/evidence events. "
         "Never wait for heartbeat, cron, or wall-clock time to take the next step. "
         "Publicly assign the next actionable work, chase evidence, and resolve blockers. "
-        "Project-level stage confirmation is owned by the decision maker — do NOT ask humans "
-        "or members to make project decisions. "
+        "Members report progress to YOU; when project-level sign-off is needed, escalate to the "
+        "decision maker (call `at` then @ them) — do NOT ask humans or members to make project decisions. "
         "When you must @ someone: call the `at` tool with their participant_id first, then include "
         "@DisplayName in the visible reply; never write @Name without calling `at`."
     )
@@ -60,6 +60,25 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
                 if name:
                     names.append(f"@{name}")
     human_ref = ", ".join(names) if names else "the group human manager"
+    if kind == "member_progress":
+        actor = str(action_payload.get("actor_display_name") or "a member").strip() or "a member"
+        dm_hint = (
+            f" If project sign-off is needed, call `at` with participant_id={dm_id} "
+            f"and mention @{dm_name or '决策者'}."
+            if dm_id
+            else " If project sign-off is needed and no decision maker is bound, state the gap publicly."
+        )
+        return (
+            f"{base} Member progress: {actor} submitted evidence. "
+            f"Acknowledge, reassign next work, and chase remaining items.{dm_hint}"
+        )
+    if kind == "decision_resolved":
+        dtitle = str(action_payload.get("decision_title") or "decision").strip()
+        dstatus = str(action_payload.get("decision_status") or "").strip()
+        return (
+            f"{base} Decision resolved: 「{dtitle}」 status={dstatus or '-'}. "
+            "Publicly assign next steps from this conclusion immediately; do not wait."
+        )
     if kind == "approval_required":
         if dm_id:
             return (
@@ -414,19 +433,36 @@ class GroupContextBuilder:
             action_payload = dict(leader_action.payload or {}) if leader_action is not None else {}
             confirm_targets = action_payload.get("confirm_targets") if isinstance(action_payload.get("confirm_targets"), list) else []
             if is_decision_maker:
+                leader_id = str(group.leader_participant_id) if group.leader_participant_id else ""
+                leader_hint = (
+                    f" After every final decision, call `at` with the group leader participant_id={leader_id} "
+                    "and publicly @ the leader with the conclusion so they continue execution."
+                    if leader_id
+                    else " After every final decision, publicly @ the group leader with the conclusion."
+                )
                 instruction = (
                     "You are the group decision maker. Classify pending stage decisions with "
                     "group_decision_classify_and_act. Routine → auto-confirm; "
                     "human_comms / external_deploy / finance / uncertain → DM managers for approval. "
-                    "Always report after a final decision. Do not perform external deploy or finance actions."
+                    "Always send the configured private decision report after a final decision. "
+                    f"{leader_hint} "
+                    "Do not perform external deploy or finance actions. Do not replace the leader's orchestration."
                 )
             elif is_leader:
                 instruction = _leader_workflow_instruction(action_payload)
             else:
+                leader_id = str(group.leader_participant_id) if group.leader_participant_id else ""
+                leader_at = (
+                    f"call `at` with participant_id={leader_id} then @ the group leader"
+                    if leader_id
+                    else "call `at` then @ the group leader"
+                )
                 instruction = (
                     "Use structured workflow tools to record work, evidence, and blockers. "
-                    "Do not ask humans to make project-level decisions; the decision maker owns those. "
-                    "If you must @ someone: call the `at` tool with participant_id first, then include "
+                    f"After you submit evidence, hit a blocker, or need a project decision, immediately {leader_at} "
+                    "with a short progress report. Do NOT @ the decision maker or humans for project sign-off — "
+                    "the leader escalates to the decision maker. "
+                    "When you @ anyone: call the `at` tool with participant_id first, then include "
                     "@DisplayName in the visible reply."
                 )
             workflow_context = {

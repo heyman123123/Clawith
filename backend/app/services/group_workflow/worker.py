@@ -74,11 +74,29 @@ def build_leader_wake_content(payload: dict[str, Any]) -> str:
                 f"工作流推进指令（待决策者拍板）：阶段「{stage}」已齐备证据{item_part}。"
                 f"{confirm} "
                 "你继续催证据与执行编排；不要自行向人类征求项目级拍板，也不要把拍板推给成员。"
-                "不要等待心跳或定时。"
+                "需要项目拍板时，先调用 at 再 @决策者。不要等待心跳或定时。"
             )
         return (
             f"工作流推进指令（需确认）：阶段「{stage}」已齐备证据，等待确认后才能进入下一阶段"
             f"{item_part}。{confirm} 不要等待心跳或定时；在确认前可继续催未完成证据。"
+        )
+    if kind == "member_progress":
+        actor_name = str(payload.get("actor_display_name") or "成员").strip() or "成员"
+        return (
+            f"工作流推进指令（成员进度）：「{actor_name}」已提交阶段「{stage}」证据{item_part}。"
+            "请立刻公开确认进度、分派下一步或催其余未完成项。"
+            "若需项目级拍板，先调用 at 再 @决策者，不要让人类或成员做项目决策。"
+            "不要等待心跳或定时。"
+        )
+    if kind == "decision_resolved":
+        dtitle = str(payload.get("decision_title") or "项目决策").strip() or "项目决策"
+        dstatus = str(payload.get("decision_status") or "").strip()
+        dsummary = str(payload.get("decision_summary") or "").strip()
+        summary_part = f"依据：{dsummary}。" if dsummary else ""
+        return (
+            f"工作流推进指令（决策已定稿）：「{dtitle}」结论={dstatus or '-'}；阶段「{stage}」。"
+            f"{summary_part}"
+            "请立刻按结论公开分派下一步或处理遗留项，禁止干等。"
         )
     if kind == "blocker":
         return (

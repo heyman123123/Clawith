@@ -48,6 +48,35 @@ def test_approval_wake_defers_to_decision_maker() -> None:
     assert "at 工具" in content
 
 
+def test_member_progress_wake_asks_leader_to_continue() -> None:
+    content = build_leader_wake_content(
+        {
+            "kind": "member_progress",
+            "stage_title": "开发",
+            "item_title": "接口联调",
+            "actor_display_name": "Morty",
+        }
+    )
+    assert "成员进度" in content
+    assert "Morty" in content
+    assert "@决策者" in content or "决策者" in content
+
+
+def test_decision_resolved_wake_has_conclusion() -> None:
+    content = build_leader_wake_content(
+        {
+            "kind": "decision_resolved",
+            "stage_title": "验收",
+            "decision_title": "进入联调",
+            "decision_status": "auto_applied",
+            "decision_summary": "证据齐全",
+        }
+    )
+    assert "决策已定稿" in content
+    assert "进入联调" in content
+    assert "auto_applied" in content
+
+
 def test_daily_digest_wake_is_confirmation_only() -> None:
     content = build_leader_wake_content(
         {

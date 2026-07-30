@@ -14,24 +14,72 @@ from app.services.group_workflow import service
 @pytest.mark.asyncio
 async def test_submit_evidence_completes_item_before_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
     actor = uuid.uuid4()
-    workflow = SimpleNamespace(id=uuid.uuid4(), leader_participant_id=actor, version=3)
+    workflow = SimpleNamespace(id=uuid.uuid4(), leader_participant_id=actor, version=3, group_id=uuid.uuid4())
     stage = SimpleNamespace(id=uuid.uuid4(), title="交付", requires_approval=False)
-    item = SimpleNamespace(id=uuid.uuid4(), assignee_participant_id=actor, status="in_progress", evidence=[], blocked_reason=None, version=2)
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="写报告",
+        assignee_participant_id=actor,
+        status="in_progress",
+        evidence=[],
+        blocked_reason=None,
+        version=2,
+    )
+    db = SimpleNamespace(scalar=AsyncMock(return_value=SimpleNamespace(display_name="Morty")))
     monkeypatch.setattr(service, "_locked_item", AsyncMock(return_value=(workflow, stage, item)))
     recorded = AsyncMock()
     monkeypatch.setattr(service, "_event", recorded)
     transition = SimpleNamespace(workflow=workflow, stage=stage, next_stage=None, leader_action=None)
     reconcile = AsyncMock(return_value=transition)
     monkeypatch.setattr(service, "_reconcile", reconcile)
+    progress_action = SimpleNamespace(id=uuid.uuid4())
+    leader_action = AsyncMock(return_value=progress_action)
+    monkeypatch.setattr(service, "_leader_action", leader_action)
 
-    result = await service.submit_evidence(SimpleNamespace(), item_id=item.id, actor_participant_id=actor, evidence={"ref": "report.md"})
+    result = await service.submit_evidence(db, item_id=item.id, actor_participant_id=actor, evidence={"ref": "report.md"})
 
-    assert result is transition
+    assert result.leader_action is progress_action
     assert item.status == "done"
     assert item.evidence == [{"ref": "report.md"}]
     assert item.version == 3
     assert workflow.version == 4
     reconcile.assert_awaited_once()
+    assert leader_action.await_args.kwargs["kind"] == "member_progress"
+
+
+@pytest.mark.asyncio
+async def test_submit_evidence_skips_member_progress_when_gate_wakes_leader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor = uuid.uuid4()
+    workflow = SimpleNamespace(id=uuid.uuid4(), leader_participant_id=actor, version=3, group_id=uuid.uuid4())
+    stage = SimpleNamespace(id=uuid.uuid4(), title="验收", requires_approval=True)
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="合并",
+        assignee_participant_id=actor,
+        status="in_progress",
+        evidence=[],
+        blocked_reason=None,
+        version=1,
+    )
+    gate_action = SimpleNamespace(id=uuid.uuid4())
+    monkeypatch.setattr(service, "_locked_item", AsyncMock(return_value=(workflow, stage, item)))
+    monkeypatch.setattr(service, "_event", AsyncMock())
+    monkeypatch.setattr(
+        service,
+        "_reconcile",
+        AsyncMock(return_value=SimpleNamespace(workflow=workflow, stage=stage, next_stage=None, leader_action=gate_action)),
+    )
+    leader_action = AsyncMock()
+    monkeypatch.setattr(service, "_leader_action", leader_action)
+
+    result = await service.submit_evidence(
+        SimpleNamespace(), item_id=item.id, actor_participant_id=actor, evidence={"ref": "done"}
+    )
+
+    assert result.leader_action is gate_action
+    leader_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio

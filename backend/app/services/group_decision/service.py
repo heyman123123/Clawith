@@ -316,6 +316,16 @@ async def apply_routine_decision(
             allow_decision_maker=True,
         )
     await send_decision_report(db, decision)
+    await group_workflow_service.notify_leader_decision_resolved(
+        db,
+        group_id=group.id,
+        workflow_id=workflow_id or decision.workflow_id,
+        stage_id=stage_id or decision.stage_id,
+        title=decision.title,
+        status=decision.status,
+        summary=decision.summary,
+        category=decision.category,
+    )
     return decision
 
 
@@ -434,6 +444,16 @@ async def approve_decision(
                 allow_decision_maker=True,
             )
     await send_decision_report(db, decision)
+    await group_workflow_service.notify_leader_decision_resolved(
+        db,
+        group_id=decision.group_id,
+        workflow_id=decision.workflow_id,
+        stage_id=decision.stage_id,
+        title=decision.title,
+        status=decision.status,
+        summary=decision.summary,
+        category=decision.category,
+    )
     return decision
 
 
@@ -460,6 +480,16 @@ async def reject_decision(
     decision.decided_at = _now()
     await db.flush()
     await send_decision_report(db, decision)
+    await group_workflow_service.notify_leader_decision_resolved(
+        db,
+        group_id=decision.group_id,
+        workflow_id=decision.workflow_id,
+        stage_id=decision.stage_id,
+        title=decision.title,
+        status=decision.status,
+        summary=decision.summary,
+        category=decision.category,
+    )
     return decision
 
 

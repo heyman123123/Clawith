@@ -76,6 +76,54 @@ async def test_approve_rejects_second_manager(monkeypatch: pytest.MonkeyPatch) -
     assert exc.value.code == "decision_not_pending"
 
 
+@pytest.mark.asyncio
+async def test_apply_routine_notifies_leader(monkeypatch: pytest.MonkeyPatch) -> None:
+    group_id = uuid.uuid4()
+    dm_id = uuid.uuid4()
+    stage_id = uuid.uuid4()
+    group = SimpleNamespace(
+        id=group_id,
+        tenant_id=uuid.uuid4(),
+        decision_maker_participant_id=dm_id,
+        decision_report_participant_ids=[],
+    )
+    decision = SimpleNamespace(
+        id=uuid.uuid4(),
+        group_id=group_id,
+        workflow_id=None,
+        stage_id=stage_id,
+        title="过闸",
+        summary="齐了",
+        category="routine",
+        status="auto_applied",
+        decision_maker_participant_id=dm_id,
+        report_sent_at=None,
+    )
+    monkeypatch.setattr(decision_service, "_load_group", AsyncMock(return_value=group))
+    monkeypatch.setattr(decision_service, "normalize_category", lambda *a, **k: "routine")
+    monkeypatch.setattr(decision_service, "_create_request", AsyncMock(return_value=decision))
+    confirm = AsyncMock()
+    report = AsyncMock()
+    notify = AsyncMock()
+    monkeypatch.setattr(decision_service.group_workflow_service, "confirm_stage", confirm)
+    monkeypatch.setattr(decision_service, "send_decision_report", report)
+    monkeypatch.setattr(decision_service.group_workflow_service, "notify_leader_decision_resolved", notify)
+
+    result = await decision_service.apply_routine_decision(
+        SimpleNamespace(),
+        group_id=group_id,
+        title="过闸",
+        summary="齐了",
+        stage_id=stage_id,
+    )
+
+    assert result is decision
+    confirm.assert_awaited_once()
+    report.assert_awaited_once()
+    notify.assert_awaited_once()
+    assert notify.await_args.kwargs["status"] == "auto_applied"
+
+
 def test_build_decision_wake_content() -> None:
     from app.services.group_decision.wake import build_decision_wake_content
 

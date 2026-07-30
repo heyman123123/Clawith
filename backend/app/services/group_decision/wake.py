@@ -15,7 +15,8 @@ def build_decision_wake_content(payload: dict[str, Any]) -> str:
             f"决策指令（阶段待确认）：阶段「{stage}」证据已齐，需要你拍板后才能进入下一阶段。"
             f"立刻调用 group_decision_classify_and_act（category/title/summary{stage_arg}）："
             "routine 直接确认；human_comms / external_deploy / finance / uncertain 必须私聊人类管理员求批。"
-            "不要把项目拍板推给人类或成员；拍板后系统会发决策汇报。禁止干等心跳。"
+            "不要把项目拍板推给人类或成员；拍板后系统会发决策汇报，你还需在群内 at+@群主告知结论。"
+            "禁止干等心跳。"
         )
     return (
         f"决策指令（{kind}）：「{stage}」。"

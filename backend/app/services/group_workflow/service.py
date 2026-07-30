@@ -246,8 +246,13 @@ async def _decision_maker_target(db: AsyncSession, *, group_id: uuid.UUID) -> di
 
 
 async def _leader_action(
-    db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupWorkflowStage, kind: str,
+    db: AsyncSession,
+    *,
+    workflow: GroupWorkflow,
+    stage: GroupWorkflowStage,
+    kind: str,
     item: GroupWorkflowItem | None = None,
+    extra_payload: dict | None = None,
 ) -> GroupWorkflowEvent:
     decision_maker = await _decision_maker_target(db, group_id=workflow.group_id)
     # Stage confirmation is owned by the decision maker when present. Keep human
@@ -263,11 +268,55 @@ async def _leader_action(
         "confirm_targets": confirm_targets,
         "decision_maker": decision_maker,
     }
+    if extra_payload:
+        payload.update(extra_payload)
     return await _event(
         db, workflow=workflow, event_type="leader_action", source="workflow",
         idempotency_key=f"leader:{workflow.version}:{kind}:{stage.id}:{item.id if item else '-'}",
         stage_id=stage.id, item_id=item.id if item else None, dispatch=True,
         payload=payload,
+    )
+
+
+async def notify_leader_decision_resolved(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+    workflow_id: uuid.UUID | None,
+    stage_id: uuid.UUID | None,
+    title: str,
+    status: str,
+    summary: str,
+    category: str | None = None,
+) -> GroupWorkflowEvent | None:
+    """Wake the group leader after a decision reaches a terminal status."""
+    workflow = None
+    if workflow_id is not None:
+        workflow = await db.scalar(select(GroupWorkflow).where(GroupWorkflow.id == workflow_id))
+    if workflow is None:
+        workflow = await db.scalar(select(GroupWorkflow).where(GroupWorkflow.group_id == group_id))
+    if workflow is None:
+        return None
+    stage = None
+    if stage_id is not None:
+        stage = await db.scalar(select(GroupWorkflowStage).where(GroupWorkflowStage.id == stage_id))
+    if stage is None and workflow.current_stage_id is not None:
+        stage = await db.scalar(
+            select(GroupWorkflowStage).where(GroupWorkflowStage.id == workflow.current_stage_id)
+        )
+    if stage is None:
+        return None
+    return await _leader_action(
+        db,
+        workflow=workflow,
+        stage=stage,
+        kind="decision_resolved",
+        extra_payload={
+            "decision_title": title,
+            "decision_status": status,
+            "decision_summary": (summary or "")[:300],
+            "decision_category": category,
+        },
     )
 
 
@@ -388,13 +437,32 @@ async def submit_evidence(db: AsyncSession, *, item_id: uuid.UUID, actor_partici
         raise GroupWorkflowServiceError("workflow_version_conflict", "Workflow item has changed")
     if not evidence:
         raise GroupWorkflowServiceError("workflow_evidence_invalid", "Evidence must not be empty")
+    newly_done = False
     if item.status != "done":
         item.evidence = [*(item.evidence or []), evidence]
         item.status, item.blocked_reason, item.version = "done", None, item.version + 1
         workflow.version += 1
+        newly_done = True
         await _event(db, workflow=workflow, event_type="evidence_submitted", source="agent", actor_participant_id=actor_participant_id,
                      stage_id=stage.id, item_id=item.id, payload=evidence, idempotency_key=f"item:{item.id}:evidence:{item.version}")
-    return await _reconcile(db, workflow=workflow, stage=stage)
+    transition = await _reconcile(db, workflow=workflow, stage=stage)
+    # Closed loop: partial completion still wakes the leader (stage-gate wakes
+    # already cover the all-done → approval_required path).
+    if newly_done and transition.leader_action is None:
+        actor = await db.scalar(select(Participant).where(Participant.id == actor_participant_id))
+        action = await _leader_action(
+            db,
+            workflow=workflow,
+            stage=stage,
+            kind="member_progress",
+            item=item,
+            extra_payload={
+                "actor_participant_id": str(actor_participant_id),
+                "actor_display_name": actor.display_name if actor is not None else None,
+            },
+        )
+        return WorkflowTransition(workflow, stage, transition.next_stage, action)
+    return transition
 
 
 async def set_blocked(db: AsyncSession, *, item_id: uuid.UUID, actor_participant_id: uuid.UUID, reason: str) -> WorkflowTransition:
