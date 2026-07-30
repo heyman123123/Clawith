@@ -1,0 +1,135 @@
+"""Unit coverage for leader wake copy and daily digest enqueue."""
+
+from __future__ import annotations
+
+import uuid
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.services.agent_runtime.group_context_builder import _leader_workflow_instruction
+from app.services.group_workflow import daily_digest
+from app.services.group_workflow.worker import build_leader_wake_content
+
+
+def test_approval_wake_mentions_human_confirm_targets() -> None:
+    content = build_leader_wake_content(
+        {
+            "kind": "approval_required",
+            "stage_title": "验收",
+            "item_title": "合并报告",
+            "confirm_targets": [{"participant_id": str(uuid.uuid4()), "display_name": "Alice"}],
+        }
+    )
+    assert "需人类确认" in content
+    assert "@Alice" in content
+    assert "禁止干等" in content
+
+
+def test_daily_digest_wake_is_confirmation_only() -> None:
+    content = build_leader_wake_content(
+        {
+            "kind": "daily_digest",
+            "stage_title": "开发",
+            "summary": "工作流「Demo」进度：阶段[active 1]。",
+        }
+    )
+    assert "日统计日报" in content
+    assert "不驱动阶段推进" in content
+    assert "Demo" in content
+
+
+@pytest.mark.asyncio
+async def test_daily_digest_skips_when_idempotency_key_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        group_id=uuid.uuid4(),
+        name="Demo",
+        current_stage_id=None,
+        leader_participant_id=uuid.uuid4(),
+        status="active",
+    )
+    db = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [workflow]))
+        ),
+        scalar=AsyncMock(return_value=uuid.uuid4()),
+    )
+
+    @asynccontextmanager
+    async def session_factory():
+        @asynccontextmanager
+        async def begin():
+            yield
+
+        db.begin = begin
+        yield db
+
+    monkeypatch.setattr(daily_digest, "async_session", session_factory)
+    event = AsyncMock()
+    monkeypatch.setattr(daily_digest, "_event", event)
+
+    created = await daily_digest.enqueue_daily_digests_once(now=datetime(2026, 7, 30, tzinfo=UTC))
+
+    assert created == 0
+    event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_daily_digest_creates_pending_leader_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        group_id=uuid.uuid4(),
+        name="Demo",
+        current_stage_id=None,
+        leader_participant_id=uuid.uuid4(),
+        status="active",
+    )
+    db = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [workflow])),
+                SimpleNamespace(all=lambda: [("active", 1)]),
+                SimpleNamespace(all=lambda: [("done", 2), ("blocked", 1)]),
+            ]
+        ),
+        scalar=AsyncMock(return_value=None),
+    )
+
+    @asynccontextmanager
+    async def session_factory():
+        @asynccontextmanager
+        async def begin():
+            yield
+
+        db.begin = begin
+        yield db
+
+    monkeypatch.setattr(daily_digest, "async_session", session_factory)
+    monkeypatch.setattr(daily_digest, "_human_confirm_targets", AsyncMock(return_value=[]))
+    event = AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4()))
+    monkeypatch.setattr(daily_digest, "_event", event)
+
+    created = await daily_digest.enqueue_daily_digests_once(now=datetime(2026, 7, 30, tzinfo=UTC))
+
+    assert created == 1
+    payload = event.await_args.kwargs["payload"]
+    assert payload["kind"] == "daily_digest"
+    assert payload["day"] == "2026-07-30"
+    assert event.await_args.kwargs["dispatch"] is True
+    assert event.await_args.kwargs["idempotency_key"] == "daily_digest:2026-07-30"
+
+
+def test_leader_instruction_requires_immediate_human_ping() -> None:
+    text = _leader_workflow_instruction(
+        {
+            "kind": "approval_required",
+            "confirm_targets": [{"display_name": "Bob"}],
+        }
+    )
+    assert "Never wait for heartbeat" in text
+    assert "@Bob" in text
+    assert "Do not silently wait" in text

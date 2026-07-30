@@ -9,7 +9,9 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.group import Group, GroupMember
 from app.models.group_workflow import GroupWorkflow, GroupWorkflowEvent, GroupWorkflowItem, GroupWorkflowStage
+from app.models.participant import Participant
 from app.services.group_workflow.contracts import WorkflowPlan
 from app.services.group_workflow.templates import preset_workflow
 
@@ -161,15 +163,48 @@ async def replace_workflow_from_plan(
     )
 
 
+async def _human_confirm_targets(db: AsyncSession, *, group_id: uuid.UUID) -> list[dict]:
+    """Resolve human managers (fallback: group creator) for proactive @mentions."""
+    result = await db.execute(
+        select(Participant)
+        .join(GroupMember, GroupMember.participant_id == Participant.id)
+        .where(
+            GroupMember.group_id == group_id,
+            GroupMember.role == "manager",
+            Participant.type == "user",
+        )
+        .order_by(Participant.display_name)
+    )
+    managers = list(result.scalars().all())
+    if managers:
+        return [
+            {"participant_id": str(participant.id), "display_name": participant.display_name}
+            for participant in managers
+        ]
+    group = await db.scalar(select(Group).where(Group.id == group_id))
+    if group is None:
+        return []
+    creator = await db.scalar(select(Participant).where(Participant.id == group.created_by_participant_id))
+    if creator is None or creator.type != "user":
+        return []
+    return [{"participant_id": str(creator.id), "display_name": creator.display_name}]
+
+
 async def _leader_action(
     db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupWorkflowStage, kind: str,
     item: GroupWorkflowItem | None = None,
 ) -> GroupWorkflowEvent:
+    payload: dict = {
+        "kind": kind,
+        "stage_title": stage.title,
+        "item_title": item.title if item else None,
+        "confirm_targets": await _human_confirm_targets(db, group_id=workflow.group_id),
+    }
     return await _event(
         db, workflow=workflow, event_type="leader_action", source="workflow",
         idempotency_key=f"leader:{workflow.version}:{kind}:{stage.id}:{item.id if item else '-'}",
         stage_id=stage.id, item_id=item.id if item else None, dispatch=True,
-        payload={"kind": kind, "stage_title": stage.title, "item_title": item.title if item else None},
+        payload=payload,
     )
 
 

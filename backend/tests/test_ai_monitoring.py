@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -155,10 +156,23 @@ def test_read_api_is_admin_protected_and_migration_id_is_legacy_safe() -> None:
     migration = _migration_module()
 
     assert "/api/ai-monitoring/overview" in route_dependencies
+    assert "/api/ai-monitoring/agents/stats" in route_dependencies
+    assert "/api/ai-monitoring/groups/stats" in route_dependencies
     assert "/api/ai-monitoring/groups/{group_id}/interactions" in route_dependencies
     assert ai_monitoring_api.get_current_admin in dependencies
     assert migration.down_revision == "team_builder_leader"
     assert len(migration.revision) <= 32
+
+
+def test_monitoring_window_prefers_calendar_day_over_rolling_range() -> None:
+    since, until, label = ai_monitoring_api._window(
+        range_key="24h",
+        day=date(2026, 7, 30),
+    )
+    assert label == "day"
+    assert since.isoformat().startswith("2026-07-30")
+    assert until.isoformat().startswith("2026-07-31")
+    assert (until - since).total_seconds() == 86400
 
 
 def test_migration_resumes_when_monitoring_table_already_exists(monkeypatch) -> None:

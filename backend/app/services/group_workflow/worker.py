@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 
@@ -13,8 +15,71 @@ from app.models.chat_session import ChatSession
 from app.models.group_workflow import GroupWorkflow, GroupWorkflowEvent
 from app.models.participant import Participant
 from app.services import group_message_service
+from app.services.group_workflow import daily_digest
 
 logger = logging.getLogger(__name__)
+
+_DIGEST_SCAN_SECONDS = 60.0
+
+
+def _confirm_hint(payload: dict[str, Any]) -> str:
+    targets = payload.get("confirm_targets") or []
+    if not isinstance(targets, list) or not targets:
+        return "如需人类确认，请立刻在群内公开说明确认项并 @ 群管理员；同时可继续催成员补证据，禁止干等。"
+    names = ", ".join(
+        f"@{str(target.get('display_name') or '').strip()}"
+        for target in targets
+        if isinstance(target, dict) and str(target.get("display_name") or "").strip()
+    )
+    if not names:
+        return "如需人类确认，请立刻在群内公开说明确认项并 @ 群管理员；同时可继续催成员补证据，禁止干等。"
+    return f"请立刻在群内公开说明确认项并 {names}；同时可继续催成员补证据，禁止干等。"
+
+
+def build_leader_wake_content(payload: dict[str, Any]) -> str:
+    """Human-readable wake text keyed by leader_action kind."""
+    kind = str(payload.get("kind") or "state_changed")
+    stage = str(payload.get("stage_title") or "当前阶段")
+    item = payload.get("item_title")
+    item_part = f"；关联工作项：{item}" if item else ""
+    confirm = _confirm_hint(payload)
+
+    if kind == "approval_required":
+        return (
+            f"工作流推进指令（需人类确认）：阶段「{stage}」已齐备证据，等待管理员确认后才能进入下一阶段"
+            f"{item_part}。{confirm} 不要等待心跳或定时；在确认前可继续催未完成证据。"
+        )
+    if kind == "blocker":
+        return (
+            f"工作流推进指令（阻塞）：阶段「{stage}」存在阻塞{item_part}。"
+            f"请立刻公开处理阻塞或重新分派；{confirm}"
+        )
+    if kind == "stage_activated":
+        return (
+            f"工作流推进指令（阶段激活）：「{stage}」已激活{item_part}。"
+            "请立刻在群内公开分派下一步可执行工作，按 SOP/证据推进，禁止按时间等待。"
+        )
+    if kind == "workflow_resumed":
+        return (
+            f"工作流推进指令（已恢复）：「{stage}」{item_part}。"
+            "请立刻继续分派下一步并处理遗留阻塞，禁止按时间等待。"
+        )
+    if kind == "workflow_completed":
+        return (
+            f"工作流推进指令（已完成）：「{stage}」{item_part}。"
+            "请在群内公开确认完成状态；无需再推进阶段。"
+        )
+    if kind == "daily_digest":
+        summary = str(payload.get("summary") or "").strip()
+        body = summary or f"阶段「{stage}」日统计摘要已生成。"
+        return (
+            f"【日统计日报】{body} "
+            "本日报仅供群主/管理员确认进度，不驱动阶段推进。请审阅并公开确认。"
+        )
+    return (
+        f"工作流推进指令（{kind}）：{stage}{item_part}。"
+        f"请依据当前工作流状态立刻公开分发下一步或处理阻塞。{confirm}"
+    )
 
 
 async def _claim_leader_action() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | None, uuid.UUID | None, dict] | None:
@@ -84,10 +149,6 @@ async def dispatch_leader_actions_once() -> bool:
             if workflow is None:
                 await _settle(event_id, dispatched=True)
                 return True
-            kind = str(payload.get("kind") or "state_changed")
-            stage = str(payload.get("stage_title") or "当前阶段")
-            item = payload.get("item_title")
-            detail = f"；关联工作项：{item}" if item else ""
             await group_message_service.enqueue_group_message(
                 db,
                 tenant_id=tenant_id,
@@ -96,10 +157,7 @@ async def dispatch_leader_actions_once() -> bool:
                 sender_participant_id=leader_participant_id,
                 mention_participant_ids=[leader_participant_id],
                 message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"group-workflow-action:{event_id}"),
-                content=(
-                    f"工作流推进指令（{kind}）：{stage}{detail}。"
-                    "请依据当前工作流状态在群内公开分发下一步、处理阻塞或向管理员请求确认。"
-                ),
+                content=build_leader_wake_content(payload),
             )
         await _settle(event_id, dispatched=True)
     except Exception:
@@ -110,9 +168,21 @@ async def dispatch_leader_actions_once() -> bool:
 
 async def start_group_workflow_worker(scan_seconds: float = 2.0) -> None:
     logger.info("Group workflow worker started")
+    last_digest_scan = 0.0
     while True:
         processed = await dispatch_leader_actions_once()
+        now = time.monotonic()
+        if now - last_digest_scan >= _DIGEST_SCAN_SECONDS:
+            try:
+                await daily_digest.enqueue_daily_digests_once()
+            except Exception:
+                logger.exception("Group workflow daily digest scan failed")
+            last_digest_scan = now
         await asyncio.sleep(0 if processed else scan_seconds)
 
 
-__all__ = ["dispatch_leader_actions_once", "start_group_workflow_worker"]
+__all__ = [
+    "build_leader_wake_content",
+    "dispatch_leader_actions_once",
+    "start_group_workflow_worker",
+]

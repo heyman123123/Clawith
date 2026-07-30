@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -16,10 +16,15 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.ai_interaction import AIInteractionLog
 from app.models.chat_session import ChatSession
+from app.models.group import Group
 from app.models.llm import LLMModel
 from app.models.user import User
 
 router = APIRouter(prefix="/api/ai-monitoring", tags=["ai-monitoring"])
+
+SortBy = Literal["failures", "tokens", "calls"]
+SortOrder = Literal["asc", "desc"]
+RangeKey = Literal["24h"]
 
 
 class AIInteractionSummaryOut(BaseModel):
@@ -69,6 +74,101 @@ class AIInteractionPageOut(BaseModel):
     page_size: int
     total: int
     interactions: list[AIInteractionSummaryOut]
+
+
+class AIAgentStatsRowOut(BaseModel):
+    agent_id: uuid.UUID | None
+    agent_name: str | None
+    calls: int
+    successes: int
+    failures: int
+    total_tokens: int
+
+
+class AIAgentStatsOut(BaseModel):
+    range: str
+    date: str | None
+    since: datetime
+    until: datetime
+    sort_by: SortBy
+    order: SortOrder
+    group_id: uuid.UUID | None = None
+    calls: int
+    successes: int
+    failures: int
+    total_tokens: int
+    agents: list[AIAgentStatsRowOut]
+
+
+class AIGroupStatsRowOut(BaseModel):
+    group_id: uuid.UUID | None
+    group_name: str | None
+    calls: int
+    successes: int
+    failures: int
+    total_tokens: int
+
+
+class AIGroupStatsOut(BaseModel):
+    range: str
+    date: str | None
+    since: datetime
+    until: datetime
+    sort_by: SortBy
+    order: SortOrder
+    calls: int
+    successes: int
+    failures: int
+    total_tokens: int
+    groups: list[AIGroupStatsRowOut]
+
+
+def _metric_exprs():
+    calls_expr = func.count(AIInteractionLog.id)
+    failures_expr = func.count(AIInteractionLog.id).filter(AIInteractionLog.status == "error")
+    successes_expr = func.count(AIInteractionLog.id).filter(AIInteractionLog.status == "success")
+    tokens_expr = func.coalesce(func.sum(AIInteractionLog.total_tokens), 0)
+    return calls_expr, successes_expr, failures_expr, tokens_expr
+
+
+def _session_group_join():
+    return AIInteractionLog.session_id == cast(ChatSession.id, String)
+
+
+def _active_group_session_filters(tenant_id: uuid.UUID):
+    return (
+        ChatSession.tenant_id == tenant_id,
+        ChatSession.session_type == "group",
+        ChatSession.deleted_at.is_(None),
+        ChatSession.group_id.is_not(None),
+    )
+
+
+def _parse_day(value: str | None) -> date | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="date must be YYYY-MM-DD",
+        ) from exc
+
+
+def _window(
+    *,
+    range_key: RangeKey | None,
+    day: date | None,
+) -> tuple[datetime, datetime, str]:
+    now = datetime.now(UTC)
+    if day is not None:
+        start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        end = start + timedelta(days=1)
+        return start, end, "day"
+    # Default and explicit 24h both use a rolling window.
+    _ = range_key
+    return now - timedelta(hours=24), now, "24h"
 
 
 async def _names(db: AsyncSession, rows: list[AIInteractionLog]) -> tuple[dict[uuid.UUID, str], dict[uuid.UUID, str]]:
@@ -139,21 +239,39 @@ async def _page(
 async def ai_interaction_overview(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    agent_id: uuid.UUID | None = None,
+    unassigned: bool = False,
+    date: str | None = None,
+    range_key: RangeKey | None = Query(default=None, alias="range"),  # noqa: B008
     current_user: User = Depends(get_current_admin),  # noqa: B008
     db: AsyncSession = Depends(get_db),  # noqa: B008
 ):
     if current_user.tenant_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant is required")
-    since = datetime.now(UTC) - timedelta(hours=24)
+    day = _parse_day(date)
+    since, until, _ = _window(range_key=range_key, day=day)
+    # Keep 24h cards stable for the dashboard headline even when drilling by day.
+    rolling_since = datetime.now(UTC) - timedelta(hours=24)
     aggregates = await db.execute(
         select(
             func.count(AIInteractionLog.id),
             func.coalesce(func.sum(AIInteractionLog.total_tokens), 0),
             func.count(AIInteractionLog.id).filter(AIInteractionLog.status == "error"),
-        ).where(AIInteractionLog.tenant_id == current_user.tenant_id, AIInteractionLog.created_at >= since)
+        ).where(
+            AIInteractionLog.tenant_id == current_user.tenant_id,
+            AIInteractionLog.created_at >= rolling_since,
+        )
     )
     calls, tokens, errors = aggregates.one()
-    conditions = (AIInteractionLog.tenant_id == current_user.tenant_id,)
+    conditions = [
+        AIInteractionLog.tenant_id == current_user.tenant_id,
+        AIInteractionLog.created_at >= since,
+        AIInteractionLog.created_at < until,
+    ]
+    if unassigned:
+        conditions.append(AIInteractionLog.agent_id.is_(None))
+    elif agent_id is not None:
+        conditions.append(AIInteractionLog.agent_id == agent_id)
     total, interactions = await _page(
         db,
         statement=select(AIInteractionLog).where(*conditions),
@@ -172,25 +290,208 @@ async def ai_interaction_overview(
     )
 
 
+@router.get("/agents/stats", response_model=AIAgentStatsOut)
+async def ai_agent_stats(
+    date: str | None = None,
+    range_key: RangeKey | None = Query(default="24h", alias="range"),  # noqa: B008
+    sort_by: SortBy = "failures",
+    order: SortOrder = "desc",
+    group_id: uuid.UUID | None = None,
+    current_user: User = Depends(get_current_admin),  # noqa: B008
+    db: AsyncSession = Depends(get_db),  # noqa: B008
+):
+    if current_user.tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant is required")
+    day = _parse_day(date)
+    effective_range = None if day is not None else range_key
+    since, until, range_label = _window(range_key=effective_range, day=day)
+    calls_expr, successes_expr, failures_expr, tokens_expr = _metric_exprs()
+    sort_column = {
+        "failures": failures_expr,
+        "tokens": tokens_expr,
+        "calls": calls_expr,
+    }[sort_by]
+    ordered = sort_column.asc() if order == "asc" else sort_column.desc()
+    statement = (
+        select(
+            AIInteractionLog.agent_id,
+            calls_expr,
+            successes_expr,
+            failures_expr,
+            tokens_expr,
+        )
+        .where(
+            AIInteractionLog.tenant_id == current_user.tenant_id,
+            AIInteractionLog.created_at >= since,
+            AIInteractionLog.created_at < until,
+        )
+        .group_by(AIInteractionLog.agent_id)
+        .order_by(ordered, AIInteractionLog.agent_id.asc().nulls_last())
+    )
+    if group_id is not None:
+        statement = (
+            select(
+                AIInteractionLog.agent_id,
+                calls_expr,
+                successes_expr,
+                failures_expr,
+                tokens_expr,
+            )
+            .join(ChatSession, _session_group_join())
+            .where(
+                AIInteractionLog.tenant_id == current_user.tenant_id,
+                AIInteractionLog.created_at >= since,
+                AIInteractionLog.created_at < until,
+                *_active_group_session_filters(current_user.tenant_id),
+                ChatSession.group_id == group_id,
+            )
+            .group_by(AIInteractionLog.agent_id)
+            .order_by(ordered, AIInteractionLog.agent_id.asc().nulls_last())
+        )
+    result = await db.execute(statement)
+    rows = list(result.all())
+    agent_ids = {agent_id for agent_id, *_ in rows if agent_id is not None}
+    names: dict[uuid.UUID, str] = {}
+    if agent_ids:
+        name_result = await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids)))
+        names = dict(name_result.all())
+    agents = [
+        AIAgentStatsRowOut(
+            agent_id=agent_id,
+            agent_name=names.get(agent_id) if agent_id else None,
+            calls=int(calls or 0),
+            successes=int(successes or 0),
+            failures=int(failures or 0),
+            total_tokens=int(tokens or 0),
+        )
+        for agent_id, calls, successes, failures, tokens in rows
+    ]
+    return AIAgentStatsOut(
+        range=range_label,
+        date=day.isoformat() if day else None,
+        since=since,
+        until=until,
+        sort_by=sort_by,
+        order=order,
+        group_id=group_id,
+        calls=sum(row.calls for row in agents),
+        successes=sum(row.successes for row in agents),
+        failures=sum(row.failures for row in agents),
+        total_tokens=sum(row.total_tokens for row in agents),
+        agents=agents,
+    )
+
+
+@router.get("/groups/stats", response_model=AIGroupStatsOut)
+async def ai_group_stats(
+    date: str | None = None,
+    range_key: RangeKey | None = Query(default="24h", alias="range"),  # noqa: B008
+    sort_by: SortBy = "failures",
+    order: SortOrder = "desc",
+    current_user: User = Depends(get_current_admin),  # noqa: B008
+    db: AsyncSession = Depends(get_db),  # noqa: B008
+):
+    if current_user.tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant is required")
+    day = _parse_day(date)
+    effective_range = None if day is not None else range_key
+    since, until, range_label = _window(range_key=effective_range, day=day)
+    calls_expr, successes_expr, failures_expr, tokens_expr = _metric_exprs()
+    sort_column = {
+        "failures": failures_expr,
+        "tokens": tokens_expr,
+        "calls": calls_expr,
+    }[sort_by]
+    ordered = sort_column.asc() if order == "asc" else sort_column.desc()
+    result = await db.execute(
+        select(
+            ChatSession.group_id,
+            calls_expr,
+            successes_expr,
+            failures_expr,
+            tokens_expr,
+        )
+        .join(ChatSession, _session_group_join())
+        .where(
+            AIInteractionLog.tenant_id == current_user.tenant_id,
+            AIInteractionLog.created_at >= since,
+            AIInteractionLog.created_at < until,
+            *_active_group_session_filters(current_user.tenant_id),
+        )
+        .group_by(ChatSession.group_id)
+        .order_by(ordered, ChatSession.group_id.asc())
+    )
+    rows = list(result.all())
+    group_ids = {group_id for group_id, *_ in rows if group_id is not None}
+    names: dict[uuid.UUID, str] = {}
+    if group_ids:
+        name_result = await db.execute(
+            select(Group.id, Group.name).where(
+                Group.id.in_(group_ids),
+                Group.tenant_id == current_user.tenant_id,
+            )
+        )
+        names = dict(name_result.all())
+    groups = [
+        AIGroupStatsRowOut(
+            group_id=group_id,
+            group_name=names.get(group_id) if group_id else None,
+            calls=int(calls or 0),
+            successes=int(successes or 0),
+            failures=int(failures or 0),
+            total_tokens=int(tokens or 0),
+        )
+        for group_id, calls, successes, failures, tokens in rows
+    ]
+    return AIGroupStatsOut(
+        range=range_label,
+        date=day.isoformat() if day else None,
+        since=since,
+        until=until,
+        sort_by=sort_by,
+        order=order,
+        calls=sum(row.calls for row in groups),
+        successes=sum(row.successes for row in groups),
+        failures=sum(row.failures for row in groups),
+        total_tokens=sum(row.total_tokens for row in groups),
+        groups=groups,
+    )
+
+
 @router.get("/groups/{group_id}/interactions", response_model=AIInteractionPageOut)
 async def group_ai_interactions(
     group_id: uuid.UUID,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    agent_id: uuid.UUID | None = None,
+    unassigned: bool = False,
+    date: str | None = None,
+    range_key: RangeKey | None = Query(default=None, alias="range"),  # noqa: B008
     current_user: User = Depends(get_current_admin),  # noqa: B008
     db: AsyncSession = Depends(get_db),  # noqa: B008
 ):
     """Return only calls whose recorded session belongs to this active group."""
     if current_user.tenant_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant is required")
-    conditions = (
+    day = _parse_day(date)
+    conditions = [
         AIInteractionLog.tenant_id == current_user.tenant_id,
-        ChatSession.tenant_id == current_user.tenant_id,
+        *_active_group_session_filters(current_user.tenant_id),
         ChatSession.group_id == group_id,
-        ChatSession.session_type == "group",
-        ChatSession.deleted_at.is_(None),
-    )
-    join = AIInteractionLog.session_id == cast(ChatSession.id, String)
+    ]
+    if day is not None or range_key is not None:
+        since, until, _ = _window(range_key=range_key, day=day)
+        conditions.extend(
+            [
+                AIInteractionLog.created_at >= since,
+                AIInteractionLog.created_at < until,
+            ]
+        )
+    if unassigned:
+        conditions.append(AIInteractionLog.agent_id.is_(None))
+    elif agent_id is not None:
+        conditions.append(AIInteractionLog.agent_id == agent_id)
+    join = _session_group_join()
     total, interactions = await _page(
         db,
         statement=select(AIInteractionLog).join(ChatSession, join).where(*conditions),

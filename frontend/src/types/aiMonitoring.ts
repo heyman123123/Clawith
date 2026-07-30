@@ -46,3 +46,50 @@ export interface AIInteractionPage {
     total: number;
     interactions: AIInteractionSummary[];
 }
+
+export interface AIAgentStatsRow {
+    agent_id: string | null;
+    agent_name: string | null;
+    calls: number;
+    successes: number;
+    failures: number;
+    total_tokens: number;
+}
+
+export interface AIAgentStats {
+    range: string;
+    date: string | null;
+    since: string;
+    until: string;
+    sort_by: 'failures' | 'tokens' | 'calls';
+    order: 'asc' | 'desc';
+    group_id?: string | null;
+    calls: number;
+    successes: number;
+    failures: number;
+    total_tokens: number;
+    agents: AIAgentStatsRow[];
+}
+
+export interface AIGroupStatsRow {
+    group_id: string | null;
+    group_name: string | null;
+    calls: number;
+    successes: number;
+    failures: number;
+    total_tokens: number;
+}
+
+export interface AIGroupStats {
+    range: string;
+    date: string | null;
+    since: string;
+    until: string;
+    sort_by: 'failures' | 'tokens' | 'calls';
+    order: 'asc' | 'desc';
+    calls: number;
+    successes: number;
+    failures: number;
+    total_tokens: number;
+    groups: AIGroupStatsRow[];
+}

@@ -31,6 +31,48 @@ from app.services.group_file_service import GroupFileServiceError
 _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
 
 
+def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) -> str:
+    """SOP-first leader guidance: never wait on heartbeat/cron; chase humans when needed."""
+    base = (
+        "As group leader, advance only by SOP/evidence events. "
+        "Never wait for heartbeat, cron, or wall-clock time to take the next step. "
+        "Publicly assign the next actionable work, chase evidence, and resolve blockers."
+    )
+    if not action_payload:
+        return base
+    kind = str(action_payload.get("kind") or "")
+    targets = action_payload.get("confirm_targets")
+    names: list[str] = []
+    if isinstance(targets, list):
+        for target in targets:
+            if isinstance(target, Mapping):
+                name = str(target.get("display_name") or "").strip()
+                if name:
+                    names.append(f"@{name}")
+    human_ref = ", ".join(names) if names else "the group human manager"
+    if kind == "approval_required":
+        return (
+            f"{base} Approval gate is active: immediately @ {human_ref} in the group chat, "
+            "state the confirmation items publicly, and keep chasing members for missing evidence. "
+            "Do not silently wait for approval."
+        )
+    if kind == "blocker":
+        return (
+            f"{base} A blocker is active: unblock or reassign now. "
+            f"If a human decision is required, immediately @ {human_ref}."
+        )
+    if kind == "daily_digest":
+        return (
+            f"{base} This wake is a daily stats digest only — ask humans to acknowledge the summary; "
+            "do NOT use the digest itself to advance stages."
+        )
+    if kind == "stage_activated":
+        return f"{base} A stage just activated: immediately distribute the next concrete assignments."
+    if kind == "workflow_completed":
+        return f"{base} The workflow is completed: publicly confirm completion; do not invent new stages."
+    return base
+
+
 @dataclass(frozen=True, slots=True)
 class GroupContextCapture:
     """Validated group input and enriched recent message snapshots."""
@@ -350,8 +392,11 @@ class GroupContextBuilder:
             leader_action = await db.scalar(select(GroupWorkflowEvent).where(
                 GroupWorkflowEvent.workflow_id == workflow.id,
                 GroupWorkflowEvent.event_type == "leader_action",
-                GroupWorkflowEvent.dispatch_state.in_(("pending", "claimed")),
+                GroupWorkflowEvent.dispatch_state.in_(("pending", "claimed", "dispatched")),
             ).order_by(GroupWorkflowEvent.created_at.desc()).limit(1))
+            is_leader = group.leader_participant_id == target_participant_id
+            action_payload = dict(leader_action.payload or {}) if leader_action is not None else {}
+            confirm_targets = action_payload.get("confirm_targets") if isinstance(action_payload.get("confirm_targets"), list) else []
             workflow_context = {
                 "workflow_id": str(workflow.id),
                 "status": workflow.status,
@@ -367,13 +412,18 @@ class GroupContextBuilder:
                     for item in assigned_items
                 ],
                 "leader_next_action": (
-                    {"kind": leader_action.payload.get("kind"), "stage_id": str(leader_action.stage_id) if leader_action.stage_id else None,
-                     "item_id": str(leader_action.item_id) if leader_action.item_id else None}
+                    {
+                        "kind": action_payload.get("kind"),
+                        "stage_id": str(leader_action.stage_id) if leader_action.stage_id else None,
+                        "item_id": str(leader_action.item_id) if leader_action.item_id else None,
+                        "confirm_targets": confirm_targets,
+                        "summary": action_payload.get("summary"),
+                    }
                     if leader_action else None
                 ),
                 "instruction": (
-                    "As group leader, publicly distribute the next actionable work and resolve blockers; do not wait for time-based polling."
-                    if group.leader_participant_id == target_participant_id
+                    _leader_workflow_instruction(action_payload)
+                    if is_leader
                     else "Use structured workflow tools to record work, evidence, and blockers."
                 ),
             }
