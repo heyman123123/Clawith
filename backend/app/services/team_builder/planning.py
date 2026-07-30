@@ -73,16 +73,97 @@ class TeamPlan(BaseModel):
 
 _SYSTEM_PROMPT = """You design durable Clawith AI teams. Return exactly one JSON object, no Markdown.
 Use exactly these fields: group_name, goal, assumptions, phases, members, delegations.
+phases must be an array of plain strings (phase titles), not objects.
+assumptions must be an array of plain strings.
 Each member has member_key, name, role_description, responsibility, source, existing_agent_id,
 template_id, skill_ids, and is_leader. source is existing or new; exactly one member is_leader.
+template_id and skill_ids must be real UUIDs from the platform, or null / []. Never invent slug names.
 Each delegation has from_member_key, to_member_key, and instruction. The leader receives all human
 directions and delegates work publicly to team members. Use existing only with an ID in candidate_agents.
 Create new members when no candidate fits. Keep the team as small as possible."""
 
 
+def _as_text(value: object) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, dict):
+        for key in ("name", "title", "phase", "summary", "description", "text"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return None
+    return None
+
+
+def _as_uuid(value: object) -> uuid.UUID | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _normalize_team_plan_payload(payload: object) -> object:
+    """Coerce common LLM shape drift before strict Pydantic validation."""
+    if not isinstance(payload, dict):
+        return payload
+    data = dict(payload)
+
+    phases = data.get("phases")
+    if isinstance(phases, list):
+        normalized_phases: list[str] = []
+        for item in phases:
+            text = _as_text(item)
+            if text:
+                normalized_phases.append(text[:500])
+        data["phases"] = normalized_phases
+
+    assumptions = data.get("assumptions")
+    if isinstance(assumptions, list):
+        data["assumptions"] = [
+            text for text in (_as_text(item) for item in assumptions) if text
+        ][:20]
+
+    members = data.get("members")
+    if isinstance(members, list):
+        normalized_members: list[dict] = []
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            row = dict(member)
+            row["template_id"] = _as_uuid(row.get("template_id"))
+            skill_ids = row.get("skill_ids") or []
+            if isinstance(skill_ids, list):
+                row["skill_ids"] = [
+                    skill_id
+                    for skill_id in (_as_uuid(item) for item in skill_ids)
+                    if skill_id is not None
+                ]
+            else:
+                row["skill_ids"] = []
+            existing_raw = row.get("existing_agent_id")
+            existing_id = _as_uuid(existing_raw)
+            row["existing_agent_id"] = existing_id
+            # LLM often invents slug agent ids; demote those to new hires.
+            if (
+                row.get("source") == "existing"
+                and existing_id is None
+                and existing_raw not in (None, "")
+            ):
+                row["source"] = "new"
+            normalized_members.append(row)
+        data["members"] = normalized_members
+
+    return data
+
+
 def validate_team_plan(payload: object) -> TeamPlan:
     try:
-        return TeamPlan.model_validate(payload)
+        return TeamPlan.model_validate(_normalize_team_plan_payload(payload))
     except ValidationError as exc:
         raise TeamBuilderError("team_plan_invalid", str(exc), retryable=True) from exc
 
@@ -92,7 +173,7 @@ def _parse_json(content: str | None) -> object:
         raise TeamBuilderError("team_plan_empty", "Team planning model returned no content", retryable=True)
     value = content.strip()
     if value.startswith("```"):
-        value = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"^```(?:json)?\s*|\s*```$", "", value, flags=re.IGNORECASE)
     try:
         return json.loads(value)
     except json.JSONDecodeError as exc:

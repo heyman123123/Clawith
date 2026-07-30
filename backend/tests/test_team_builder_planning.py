@@ -63,3 +63,53 @@ def test_team_plan_rejects_existing_member_without_agent_identity() -> None:
 
     with pytest.raises(TeamBuilderError, match="existing members require"):
         validate_team_plan(payload)
+
+
+def test_team_plan_normalizes_phase_objects_and_slug_ids() -> None:
+    payload = {
+        "group_name": "低代码团队",
+        "goal": "搭建低代码平台",
+        "assumptions": [{"text": "优先复用现有能力"}],
+        "phases": [
+            {"name": "阶段一：需求澄清", "deliverables": ["PRD"]},
+            "阶段二：架构设计",
+        ],
+        "members": [
+            {
+                "member_key": "team_leader",
+                "name": "项目经理",
+                "role_description": "统筹",
+                "responsibility": "拆解与分派",
+                "source": "new",
+                "template_id": "project_manager",
+                "skill_ids": ["project_management", "task_decomposition"],
+                "is_leader": True,
+            },
+            {
+                "member_key": "frontend_engineer",
+                "name": "前端工程师",
+                "role_description": "前端实现",
+                "responsibility": "页面与交互",
+                "source": "new",
+                "template_id": "frontend_engineer",
+                "skill_ids": ["react", "typescript"],
+                "is_leader": False,
+            },
+        ],
+        "delegations": [
+            {
+                "from_member_key": "team_leader",
+                "to_member_key": "frontend_engineer",
+                "instruction": "完成首屏交互原型",
+            }
+        ],
+    }
+
+    plan = validate_team_plan(payload)
+
+    assert plan.phases == ["阶段一：需求澄清", "阶段二：架构设计"]
+    assert plan.assumptions == ["优先复用现有能力"]
+    assert plan.members[0].template_id is None
+    assert plan.members[0].skill_ids == []
+    assert plan.members[1].template_id is None
+    assert plan.members[1].skill_ids == []
