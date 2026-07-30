@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +25,7 @@ _PERSONALITY = (
     "常规事项可直接确认并推进；涉及人沟通、对外部署、财务，或拿不准时，必须私聊人类群管理求批，任一确认即可。"
     "禁止自行执行对外部署、打款或代替人类对外沟通。"
     "每一次拍板（含拒绝定稿）后，必须向配置的汇报对象发送简短私聊汇报。"
+    "被唤醒后立刻调用 group_decision_classify_and_act，不要把项目拍板推给人类或成员。"
 )
 _BOUNDARIES = (
     "群主负责编排与执行，你不取代群主。"
@@ -38,6 +40,7 @@ async def ensure_group_decision_maker(
     group: Group,
     creator: User,
     goal: str | None = None,
+    require_ready: bool = True,
 ) -> uuid.UUID:
     """Idempotently ensure the group has a decision-maker agent participant."""
     if group.decision_maker_participant_id is not None:
@@ -86,12 +89,48 @@ async def ensure_group_decision_maker(
     except Exception:
         agent.status = "error"
         logger.exception("Failed to initialize decision maker agent for group %s", group.id)
-        raise
+        if require_ready:
+            raise
 
     group.decision_maker_participant_id = participant.id
     await _ensure_membership(db, group_id=group.id, participant_id=participant.id)
     await db.flush()
     return participant.id
+
+
+async def ensure_group_decision_maker_from_group(
+    db: AsyncSession,
+    *,
+    group: Group,
+    goal: str | None = None,
+    require_ready: bool = False,
+) -> uuid.UUID | None:
+    """Resolve creator from the group and ensure a decision maker when possible."""
+    if group.decision_maker_participant_id is not None:
+        await _ensure_membership(
+            db, group_id=group.id, participant_id=group.decision_maker_participant_id
+        )
+        return group.decision_maker_participant_id
+    creator_participant = await db.scalar(
+        select(Participant).where(Participant.id == group.created_by_participant_id)
+    )
+    if creator_participant is None or creator_participant.type != "user":
+        return None
+    creator = await db.scalar(select(User).where(User.id == creator_participant.ref_id))
+    if creator is None:
+        return None
+    try:
+        return await ensure_group_decision_maker(
+            db,
+            tenant_id=group.tenant_id,
+            group=group,
+            creator=creator,
+            goal=goal,
+            require_ready=require_ready,
+        )
+    except Exception:
+        logger.exception("Lazy decision-maker seed failed for group %s", group.id)
+        return None
 
 
 async def _ensure_membership(
@@ -106,8 +145,6 @@ async def _ensure_membership(
     )
     if membership is not None:
         return
-    from datetime import UTC, datetime
-
     db.add(
         GroupMember(
             id=uuid.uuid4(),
@@ -134,8 +171,6 @@ async def rebind_decision_maker(
     )
     if participant is None or participant.type != "agent":
         raise ValueError("decision_maker_invalid")
-    from app.models.agent import Agent
-
     agent = await db.scalar(
         select(Agent).where(Agent.id == participant.ref_id, Agent.tenant_id == tenant_id)
     )

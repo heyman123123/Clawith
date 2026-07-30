@@ -30,9 +30,9 @@ function BuildHistoryRow({ item, onOpen }: {
             <span className={`team-builder-history-status ${item.job?.status ?? item.draft.status}`}>
                 {isComplete
                     ? t('groups.teamBuilderOpenGroup', '进入群聊')
-                    : t(`groups.teamBuilderStatus.${item.job?.status ?? item.draft.status}`, item.job?.status ?? item.draft.status)}
+                    : t('groups.teamBuilderContinue', '继续搭建')}
             </span>
-            {isComplete && <IconArrowRight size={15} stroke={1.8} />}
+            <IconArrowRight size={15} stroke={1.8} />
         </button>
     );
 }
@@ -52,11 +52,17 @@ export default function TeamBuilderPage() {
     );
 
     const openHistoryItem = (item: TeamBuildHistoryItem) => {
-        if (item.job?.status !== 'completed' || !item.job.group_id) return;
-        navigate(item.job.session_id
-            ? `/groups/${item.job.group_id}/${item.job.session_id}`
-            : `/groups/${item.job.group_id}`,
-        );
+        if (item.job?.status === 'completed' && item.job.group_id) {
+            navigate(item.job.session_id
+                ? `/groups/${item.job.group_id}/${item.job.session_id}`
+                : `/groups/${item.job.group_id}`,
+            );
+            return;
+        }
+        if (item.job?.id) localStorage.setItem('groups.teamBuilder.jobId', item.job.id);
+        else localStorage.removeItem('groups.teamBuilder.jobId');
+        localStorage.setItem('groups.teamBuilder.draftId', item.draft.id);
+        window.location.reload();
     };
 
     return (

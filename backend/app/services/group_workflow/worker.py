@@ -1,4 +1,4 @@
-"""Recover durable workflow actions by activating the group leader once."""
+"""Recover durable workflow actions by activating the group leader / decision maker."""
 
 from __future__ import annotations
 
@@ -22,18 +22,41 @@ logger = logging.getLogger(__name__)
 _DIGEST_SCAN_SECONDS = 60.0
 
 
+def _at_protocol_hint(*, participant_id: str, display_name: str) -> str:
+    return (
+        f"先调用 at 工具传入 participant_id={participant_id}，"
+        f"再在公开回复正文写出 @{display_name}。"
+        "禁止只写 @名字却不调用 at（会触发 invalid_group_at）。"
+    )
+
+
 def _confirm_hint(payload: dict[str, Any]) -> str:
+    decision_maker = payload.get("decision_maker")
+    if isinstance(decision_maker, dict):
+        dm_id = str(decision_maker.get("participant_id") or "").strip()
+        dm_name = str(decision_maker.get("display_name") or "决策者").strip() or "决策者"
+        if dm_id:
+            return (
+                f"项目级确认由决策者「{dm_name}」负责，不要让人类或成员做项目拍板。"
+                f"{_at_protocol_hint(participant_id=dm_id, display_name=dm_name)}"
+            )
     targets = payload.get("confirm_targets") or []
     if not isinstance(targets, list) or not targets:
-        return "如需人类确认，请立刻在群内公开说明确认项并 @ 群管理员；同时可继续催成员补证据，禁止干等。"
-    names = ", ".join(
-        f"@{str(target.get('display_name') or '').strip()}"
-        for target in targets
-        if isinstance(target, dict) and str(target.get("display_name") or "").strip()
-    )
-    if not names:
-        return "如需人类确认，请立刻在群内公开说明确认项并 @ 群管理员；同时可继续催成员补证据，禁止干等。"
-    return f"请立刻在群内公开说明确认项并 {names}；同时可继续催成员补证据，禁止干等。"
+        return (
+            "当前没有决策者绑定：请在群内公开说明确认项；"
+            "如需 @ 管理员，必须先调用 at 工具再写可见 @ 名字。"
+        )
+    parts: list[str] = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        name = str(target.get("display_name") or "").strip()
+        pid = str(target.get("participant_id") or "").strip()
+        if name and pid:
+            parts.append(_at_protocol_hint(participant_id=pid, display_name=name))
+    if not parts:
+        return "如需人类确认，请先调用 at 工具再在正文写 @名字。"
+    return "；".join(parts)
 
 
 def build_leader_wake_content(payload: dict[str, Any]) -> str:
@@ -43,10 +66,18 @@ def build_leader_wake_content(payload: dict[str, Any]) -> str:
     item = payload.get("item_title")
     item_part = f"；关联工作项：{item}" if item else ""
     confirm = _confirm_hint(payload)
+    decision_maker = payload.get("decision_maker") if isinstance(payload.get("decision_maker"), dict) else None
 
     if kind == "approval_required":
+        if decision_maker:
+            return (
+                f"工作流推进指令（待决策者拍板）：阶段「{stage}」已齐备证据{item_part}。"
+                f"{confirm} "
+                "你继续催证据与执行编排；不要自行向人类征求项目级拍板，也不要把拍板推给成员。"
+                "不要等待心跳或定时。"
+            )
         return (
-            f"工作流推进指令（需人类确认）：阶段「{stage}」已齐备证据，等待管理员确认后才能进入下一阶段"
+            f"工作流推进指令（需确认）：阶段「{stage}」已齐备证据，等待确认后才能进入下一阶段"
             f"{item_part}。{confirm} 不要等待心跳或定时；在确认前可继续催未完成证据。"
         )
     if kind == "blocker":
@@ -58,6 +89,7 @@ def build_leader_wake_content(payload: dict[str, Any]) -> str:
         return (
             f"工作流推进指令（阶段激活）：「{stage}」已激活{item_part}。"
             "请立刻在群内公开分派下一步可执行工作，按 SOP/证据推进，禁止按时间等待。"
+            "项目级拍板交给决策者，不要让人类或成员做项目决策。"
         )
     if kind == "workflow_resumed":
         return (
@@ -129,8 +161,6 @@ async def dispatch_leader_actions_once() -> bool:
     if claimed is None:
         return False
     event_id, tenant_id, leader_participant_id, session_id, payload = claimed
-    # A manually-created group can have no Agent leader. Keep the action in
-    # history but do not leave the worker spinning indefinitely on it.
     if leader_participant_id is None or session_id is None:
         await _settle(event_id, dispatched=True)
         return True
@@ -198,29 +228,49 @@ async def _claim_decision_action() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | No
 
 
 async def dispatch_decision_actions_once() -> bool:
+    from app.models.group import Group
+    from app.services.group_decision.seed import ensure_group_decision_maker_from_group
     from app.services.group_decision.wake import build_decision_wake_content
 
     claimed = await _claim_decision_action()
     if claimed is None:
         return False
     event_id, tenant_id, decision_maker_participant_id, session_id, payload = claimed
-    if decision_maker_participant_id is None or session_id is None:
-        await _settle(event_id, dispatched=True)
-        return True
     try:
         async with async_session() as db, db.begin():
-            maker = await db.scalar(
-                select(Participant).where(Participant.id == decision_maker_participant_id)
-            )
-            if maker is None or maker.type != "agent":
-                await _settle(event_id, dispatched=True)
-                return True
             workflow = await db.scalar(
                 select(GroupWorkflow)
                 .join(GroupWorkflowEvent, GroupWorkflowEvent.workflow_id == GroupWorkflow.id)
                 .where(GroupWorkflowEvent.id == event_id)
             )
             if workflow is None:
+                await _settle(event_id, dispatched=True)
+                return True
+            group = await db.scalar(select(Group).where(Group.id == workflow.group_id))
+            if group is not None and (
+                decision_maker_participant_id is None or group.decision_maker_participant_id is None
+            ):
+                await ensure_group_decision_maker_from_group(
+                    db,
+                    group=group,
+                    goal=group.description or group.name,
+                    require_ready=False,
+                )
+                await db.refresh(group)
+                decision_maker_participant_id = group.decision_maker_participant_id
+            if decision_maker_participant_id is None or session_id is None:
+                logger.warning(
+                    "Decision action %s skipped: dm=%s session=%s",
+                    event_id,
+                    decision_maker_participant_id,
+                    session_id,
+                )
+                await _settle(event_id, dispatched=True)
+                return True
+            maker = await db.scalar(
+                select(Participant).where(Participant.id == decision_maker_participant_id)
+            )
+            if maker is None or maker.type != "agent":
                 await _settle(event_id, dispatched=True)
                 return True
             await group_message_service.enqueue_group_message(

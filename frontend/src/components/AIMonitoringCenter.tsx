@@ -190,8 +190,8 @@ export function AIMonitoringCenter() {
     </section>;
 }
 
-function StatsTable({
-    kind, rows, loading, error, onSelectGroup, onSelectAgent,
+export function AIMonitoringStatsTable({
+    kind, rows, loading, error, onSelectGroup, onSelectAgent, compact = false,
 }: {
     kind: 'group' | 'agent';
     rows: Array<AIGroupStatsRow | AIAgentStatsRow>;
@@ -199,15 +199,20 @@ function StatsTable({
     error?: boolean;
     onSelectGroup?: (row: AIGroupStatsRow) => void;
     onSelectAgent?: (row: AIAgentStatsRow) => void;
+    compact?: boolean;
 }) {
     const { t } = useTranslation();
     if (loading) return <div style={{ padding: '16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>{t('common.loading')}</div>;
     if (error) return <div style={{ padding: '16px', color: 'var(--error)', fontSize: '12px' }}>{t('dashboard.aiMonitoring.loadFailed')}</div>;
     if (rows.length === 0) return <div style={{ padding: '16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>{t('dashboard.aiMonitoring.empty')}</div>;
     const nameHeader = kind === 'group' ? t('dashboard.aiMonitoring.group') : t('dashboard.aiMonitoring.agent');
+    const columns = compact
+        ? 'minmax(88px, 1.2fr) 48px 48px 48px 56px'
+        : 'minmax(140px, 1.4fr) 72px 72px 72px 88px';
+    const tableGridStyle = { ...gridStyle, gridTemplateColumns: columns, padding: compact ? '8px 12px' : gridStyle.padding };
     return <div style={{ overflowX: 'auto' }}>
-        <div style={{ minWidth: '640px' }}>
-            <div style={gridStyle}>
+        <div style={{ minWidth: compact ? '420px' : '640px' }}>
+            <div style={tableGridStyle}>
                 <span>{nameHeader}</span>
                 <span>{t('dashboard.aiMonitoring.calls')}</span>
                 <span>{t('dashboard.aiMonitoring.successes')}</span>
@@ -229,7 +234,7 @@ function StatsTable({
                             if (kind === 'group') onSelectGroup?.(row as AIGroupStatsRow);
                             else onSelectAgent?.(row as AIAgentStatsRow);
                         }}
-                        style={{ ...gridStyle, width: '100%', border: 0, borderTop: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-secondary)', textAlign: 'left', textTransform: 'none', cursor: 'pointer', fontSize: '12px' }}
+                        style={{ ...tableGridStyle, width: '100%', border: 0, borderTop: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-secondary)', textAlign: 'left', textTransform: 'none', cursor: 'pointer', fontSize: '12px' }}
                     >
                         <span title={name} style={truncate}>{name}</span>
                         <span>{row.calls}</span>
@@ -241,6 +246,17 @@ function StatsTable({
             })}
         </div>
     </div>;
+}
+
+function StatsTable(props: {
+    kind: 'group' | 'agent';
+    rows: Array<AIGroupStatsRow | AIAgentStatsRow>;
+    loading?: boolean;
+    error?: boolean;
+    onSelectGroup?: (row: AIGroupStatsRow) => void;
+    onSelectAgent?: (row: AIAgentStatsRow) => void;
+}) {
+    return <AIMonitoringStatsTable {...props} />;
 }
 
 const gridStyle = {

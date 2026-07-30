@@ -81,10 +81,40 @@ export default function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
         retry: false,
     });
 
+    const pushCadencePreview = settings?.push_cadence || 'both';
+    const workflowPushPreview =
+        pushCadencePreview === 'workflow' || pushCadencePreview === 'both';
+    const { data: workflowGroups = [] } = useQuery({
+        queryKey: ['okr-workflow-groups', tenantId],
+        queryFn: () => fetchJson<Array<{ id: string; name: string }>>('/okr/settings/workflow-groups'),
+        enabled: !!settings?.enabled && workflowPushPreview,
+    });
+
     if (isLoading) return <div style={{ padding: '20px' }}>{t('common.loading', 'Loading...')}</div>;
-    const s = settings || { enabled: false, first_enabled_at: null, daily_report_enabled: false, daily_report_time: '18:00', daily_report_skip_non_workdays: true, weekly_report_enabled: false, weekly_report_day: 0, period_frequency: 'quarterly', period_length_days: null, period_frequency_locked: false };
+    const s = settings || {
+        enabled: false,
+        first_enabled_at: null,
+        daily_report_enabled: false,
+        daily_report_time: '18:00',
+        daily_report_skip_non_workdays: true,
+        weekly_report_enabled: false,
+        weekly_report_day: 0,
+        period_frequency: 'quarterly',
+        period_length_days: null,
+        period_frequency_locked: false,
+        push_cadence: 'both',
+        workflow_trigger_events: ['stage_completed', 'workflow_completed'],
+        excluded_group_ids: [],
+    };
     const periodFrequencyLocked = !!s.period_frequency_locked || !!s.first_enabled_at;
     const effectiveTimezone = tenantInfo?.timezone || 'UTC';
+    const pushCadence = s.push_cadence || 'both';
+    const workflowEvents: string[] = Array.isArray(s.workflow_trigger_events)
+        ? s.workflow_trigger_events
+        : ['stage_completed', 'workflow_completed'];
+    const excludedGroupIds: string[] = Array.isArray(s.excluded_group_ids) ? s.excluded_group_ids : [];
+    const workflowPushEnabled = pushCadence === 'workflow' || pushCadence === 'both';
+    const calendarPushEnabled = pushCadence === 'calendar' || pushCadence === 'both';
 
     // Primary source: /settings now embeds okr_agent_id directly.
     // Fallback to members-without-okr response for backward compat.
@@ -340,12 +370,98 @@ export default function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                             )}
                         </div>
 
-                        {/* Daily report */}
+                        {/* Push cadence */}
                         <div style={{ marginBottom: '24px' }}>
+                            <div style={{ fontWeight: 500, marginBottom: '8px', fontSize: '13px' }}>
+                                {zh ? 'OKR 推动节奏' : 'OKR Push Cadence'}
+                            </div>
+                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '10px', lineHeight: 1.5, maxWidth: '620px' }}>
+                                {zh
+                                    ? '可按日历收集，也可跟随群项目阶段节点催收。两者并存时，同一人同一天只催一次。勾选的阶段节点须经群管理「确认并进入下一阶段」后才算到达并催收；不会用 OKR 去自动推进阶段。'
+                                    : 'Drive collection by calendar, project workflow stages, or both. Same person is nudged at most once per day. Selected stage nodes only count after a group manager confirms “enter next stage”. OKR never auto-advances stages.'}
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                {([
+                                    ['both', zh ? '日历 + 项目进度' : 'Calendar + project progress'],
+                                    ['calendar', zh ? '仅日历' : 'Calendar only'],
+                                    ['workflow', zh ? '仅项目进度' : 'Project progress only'],
+                                ] as const).map(([value, label]) => (
+                                    <label key={value} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                                        <input
+                                            type="radio"
+                                            name="okr-push-cadence"
+                                            checked={pushCadence === value}
+                                            onChange={() => saveOkrSettings({ ...s, push_cadence: value })}
+                                        />
+                                        {label}
+                                    </label>
+                                ))}
+                            </div>
+
+                            {workflowPushEnabled && (
+                                <div style={{ marginTop: '16px', padding: '12px 14px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
+                                    <div style={{ fontWeight: 500, fontSize: '12px', marginBottom: '8px' }}>
+                                        {zh ? '项目触发节点' : 'Workflow trigger events'}
+                                    </div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                        {([
+                                            ['stage_completed', zh ? '阶段完成' : 'Stage completed'],
+                                            ['workflow_completed', zh ? '工作流完成' : 'Workflow completed'],
+                                            ['stage_activated', zh ? '阶段激活' : 'Stage activated'],
+                                            ['approval_required', zh ? '需人类审批' : 'Approval required'],
+                                        ] as const).map(([value, label]) => (
+                                            <label key={value} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={workflowEvents.includes(value)}
+                                                    onChange={(e) => {
+                                                        const next = e.target.checked
+                                                            ? Array.from(new Set([...workflowEvents, value]))
+                                                            : workflowEvents.filter((item) => item !== value);
+                                                        saveOkrSettings({ ...s, workflow_trigger_events: next });
+                                                    }}
+                                                />
+                                                {label}
+                                            </label>
+                                        ))}
+                                    </div>
+                                    <div style={{ fontWeight: 500, fontSize: '12px', margin: '14px 0 8px' }}>
+                                        {zh ? '排除的群（默认自动跟踪有工作流的群）' : 'Excluded groups (workflow groups are included by default)'}
+                                    </div>
+                                    {workflowGroups.length === 0 ? (
+                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                            {zh ? '暂无带工作流的群' : 'No workflow groups yet'}
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '160px', overflowY: 'auto' }}>
+                                            {workflowGroups.map((group) => (
+                                                <label key={group.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={excludedGroupIds.includes(group.id)}
+                                                        onChange={(e) => {
+                                                            const next = e.target.checked
+                                                                ? Array.from(new Set([...excludedGroupIds, group.id]))
+                                                                : excludedGroupIds.filter((id) => id !== group.id);
+                                                            saveOkrSettings({ ...s, excluded_group_ids: next });
+                                                        }}
+                                                    />
+                                                    {group.name}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Daily report */}
+                        <div style={{ marginBottom: '24px', opacity: calendarPushEnabled ? 1 : 0.55 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
                                 <input
                                     type="checkbox"
                                     checked={s.daily_report_enabled}
+                                    disabled={!calendarPushEnabled}
                                     onChange={(e) => saveOkrSettings({ ...s, daily_report_enabled: e.target.checked })}
                                 />
                                 <div>
@@ -353,14 +469,17 @@ export default function OkrTab({ tenantId, t }: { tenantId: string; t: any }) {
                                         {zh ? '启用成员日报收集' : 'Enable Member Daily Collection'}
                                     </div>
                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                                        {zh
-                                            ? '成员只提交日报。公司日报会在次日 09:00 自动生成，周报和月报也会自动汇总。'
-                                            : 'Members only submit daily reports. The company daily report is generated at 09:00 the next day, and weekly/monthly summaries are generated automatically.'
+                                        {!calendarPushEnabled
+                                            ? (zh ? '当前为「仅项目进度」模式，日历收集已关闭。' : 'Calendar collection is off while cadence is project-progress only.')
+                                            : (zh
+                                                ? '成员只提交日报。公司日报会在次日 09:00 自动生成，周报和月报也会自动汇总。'
+                                                : 'Members only submit daily reports. The company daily report is generated at 09:00 the next day, and weekly/monthly summaries are generated automatically.'
+                                            )
                                         }
                                     </div>
                                 </div>
                             </div>
-                            {s.daily_report_enabled && (
+                            {s.daily_report_enabled && calendarPushEnabled && (
                                 <div style={{ marginLeft: '28px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '12px' }}>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
                                         <input

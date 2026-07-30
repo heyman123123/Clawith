@@ -140,6 +140,8 @@ async def get_workflow(group_id: uuid.UUID, current_user: User = Depends(get_cur
     participant = await _current_participant(db, current_user)
     group, _ = await _scope(db, tenant_id=tenant_id, group_id=group_id, participant_id=participant.id)
     workflow = await _ensure_workflow(db, group=group)
+    # Backfill decision maker + re-queue wake for stuck awaiting_approval gates.
+    await service.ensure_decision_gate_wake(db, workflow=workflow)
     return await _snapshot(db, workflow)
 
 

@@ -32,15 +32,25 @@ _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
 
 
 def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) -> str:
-    """SOP-first leader guidance: never wait on heartbeat/cron; chase humans when needed."""
+    """SOP-first leader guidance: never wait on heartbeat/cron; chase evidence; DM owns project confirms."""
     base = (
         "As group leader, advance only by SOP/evidence events. "
         "Never wait for heartbeat, cron, or wall-clock time to take the next step. "
-        "Publicly assign the next actionable work, chase evidence, and resolve blockers."
+        "Publicly assign the next actionable work, chase evidence, and resolve blockers. "
+        "Project-level stage confirmation is owned by the decision maker — do NOT ask humans "
+        "or members to make project decisions. "
+        "When you must @ someone: call the `at` tool with their participant_id first, then include "
+        "@DisplayName in the visible reply; never write @Name without calling `at`."
     )
     if not action_payload:
         return base
     kind = str(action_payload.get("kind") or "")
+    decision_maker = action_payload.get("decision_maker")
+    dm_name = ""
+    dm_id = ""
+    if isinstance(decision_maker, Mapping):
+        dm_name = str(decision_maker.get("display_name") or "").strip()
+        dm_id = str(decision_maker.get("participant_id") or "").strip()
     targets = action_payload.get("confirm_targets")
     names: list[str] = []
     if isinstance(targets, list):
@@ -51,15 +61,20 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
                     names.append(f"@{name}")
     human_ref = ", ".join(names) if names else "the group human manager"
     if kind == "approval_required":
+        if dm_id:
+            return (
+                f"{base} Approval gate is active: call `at` with participant_id={dm_id} "
+                f"and mention @{dm_name or '决策者'} so they run group_decision_classify_and_act. "
+                "Keep chasing evidence. Do not solicit project sign-off from humans or members."
+            )
         return (
-            f"{base} Approval gate is active: the decision maker (or a human manager) confirms stages. "
-            "Keep chasing members for missing evidence and publicly state confirmation items. "
-            f"If humans must override, @ {human_ref}. Do not silently wait."
+            f"{base} Approval gate is active but no decision maker is bound — "
+            f"publicly state confirmation items; if humans must override, @ {human_ref} via the `at` tool."
         )
     if kind == "blocker":
         return (
             f"{base} A blocker is active: unblock or reassign now. "
-            f"If a human decision is required, immediately @ {human_ref}."
+            f"Only if a true human exception is required, @ {human_ref} via the `at` tool."
         )
     if kind == "daily_digest":
         return (
@@ -408,7 +423,12 @@ class GroupContextBuilder:
             elif is_leader:
                 instruction = _leader_workflow_instruction(action_payload)
             else:
-                instruction = "Use structured workflow tools to record work, evidence, and blockers."
+                instruction = (
+                    "Use structured workflow tools to record work, evidence, and blockers. "
+                    "Do not ask humans to make project-level decisions; the decision maker owns those. "
+                    "If you must @ someone: call the `at` tool with participant_id first, then include "
+                    "@DisplayName in the visible reply."
+                )
             workflow_context = {
                 "workflow_id": str(workflow.id),
                 "status": workflow.status,

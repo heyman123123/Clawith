@@ -16,17 +16,20 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -381,3 +384,47 @@ class OKRSettings(Base):
 
     # The canonical OKR Agent for this company (linked during seeder)
     okr_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
+    # How OKR progress collection is driven:
+    # calendar | workflow | both (default both)
+    push_cadence: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="both", server_default=text("'both'")
+    )
+    # Subset of: stage_activated, stage_completed, approval_required, workflow_completed
+    workflow_trigger_events: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[\"stage_completed\",\"workflow_completed\"]'::jsonb")
+    )
+    # Groups excluded from workflow-driven collection (UUID strings)
+    excluded_group_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+
+
+class OKRCollectionOutreach(Base):
+    """One outreach attempt per member per report day (calendar or workflow)."""
+
+    __tablename__ = "okr_collection_outreach"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "member_type",
+            "member_id",
+            "report_date",
+            name="uq_okr_collection_outreach_day",
+        ),
+        Index("ix_okr_collection_outreach_tenant_date", "tenant_id", "report_date"),
+        CheckConstraint("member_type IN ('user', 'agent')", name="ck_okr_collection_outreach_member_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    member_type: Mapped[str] = mapped_column(String(16), nullable=False)  # user | agent
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="calendar")
+    group_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

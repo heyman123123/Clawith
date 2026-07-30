@@ -130,6 +130,7 @@ async def handle_okr_collection_trigger(trigger: AgentTrigger, now: datetime) ->
 
     from app.models.okr import OKRSettings
     from app.services.okr_daily_collection import trigger_daily_collection_for_tenant
+    from app.services.okr_settings_helpers import calendar_collection_active
 
     async with async_session() as db:
         agent_result = await db.execute(select(Agent.tenant_id).where(Agent.id == trigger.agent_id))
@@ -139,7 +140,7 @@ async def handle_okr_collection_trigger(trigger: AgentTrigger, now: datetime) ->
 
         settings_result = await db.execute(select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
         settings = settings_result.scalar_one_or_none()
-        if not settings or not settings.enabled or not settings.daily_report_enabled:
+        if not settings or not calendar_collection_active(settings):
             return True
 
     await trigger_daily_collection_for_tenant(tenant_id)

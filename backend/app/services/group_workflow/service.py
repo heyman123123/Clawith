@@ -233,15 +233,35 @@ async def _human_confirm_targets(db: AsyncSession, *, group_id: uuid.UUID) -> li
     return [{"participant_id": str(creator.id), "display_name": creator.display_name}]
 
 
+async def _decision_maker_target(db: AsyncSession, *, group_id: uuid.UUID) -> dict | None:
+    group = await db.scalar(select(Group).where(Group.id == group_id))
+    if group is None or group.decision_maker_participant_id is None:
+        return None
+    participant = await db.scalar(
+        select(Participant).where(Participant.id == group.decision_maker_participant_id)
+    )
+    if participant is None or participant.type != "agent":
+        return None
+    return {"participant_id": str(participant.id), "display_name": participant.display_name}
+
+
 async def _leader_action(
     db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupWorkflowStage, kind: str,
     item: GroupWorkflowItem | None = None,
 ) -> GroupWorkflowEvent:
+    decision_maker = await _decision_maker_target(db, group_id=workflow.group_id)
+    # Stage confirmation is owned by the decision maker when present. Keep human
+    # targets only as an override hint for true exceptions / missing DM.
+    if kind == "approval_required" and decision_maker is not None:
+        confirm_targets: list[dict] = []
+    else:
+        confirm_targets = await _human_confirm_targets(db, group_id=workflow.group_id)
     payload: dict = {
         "kind": kind,
         "stage_title": stage.title,
         "item_title": item.title if item else None,
-        "confirm_targets": await _human_confirm_targets(db, group_id=workflow.group_id),
+        "confirm_targets": confirm_targets,
+        "decision_maker": decision_maker,
     }
     return await _event(
         db, workflow=workflow, event_type="leader_action", source="workflow",
@@ -249,6 +269,86 @@ async def _leader_action(
         stage_id=stage.id, item_id=item.id if item else None, dispatch=True,
         payload=payload,
     )
+
+
+async def _decision_action(
+    db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupWorkflowStage, kind: str,
+) -> GroupWorkflowEvent | None:
+    group = await db.scalar(select(Group).where(Group.id == workflow.group_id))
+    if group is None:
+        return None
+    if group.decision_maker_participant_id is None:
+        from app.services.group_decision.seed import ensure_group_decision_maker_from_group
+
+        await ensure_group_decision_maker_from_group(
+            db,
+            group=group,
+            goal=group.description or group.name,
+            require_ready=False,
+        )
+        await db.refresh(group)
+    if group.decision_maker_participant_id is None:
+        logger.warning(
+            "No decision maker for group %s; skipping decision_action wake", workflow.group_id
+        )
+        return None
+    payload = {
+        "kind": kind,
+        "stage_title": stage.title,
+        "stage_id": str(stage.id),
+        "decision_maker_participant_id": str(group.decision_maker_participant_id),
+    }
+    return await _event(
+        db,
+        workflow=workflow,
+        event_type="decision_action",
+        source="workflow",
+        idempotency_key=f"decision:{workflow.version}:{kind}:{stage.id}",
+        stage_id=stage.id,
+        dispatch=True,
+        payload=payload,
+    )
+
+
+async def ensure_decision_gate_wake(db: AsyncSession, *, workflow: GroupWorkflow) -> GroupWorkflowEvent | None:
+    """For stuck awaiting_approval stages: ensure DM exists and a pending decision_action."""
+    if workflow.status != "awaiting_approval" or workflow.current_stage_id is None:
+        return None
+    stage = await db.scalar(
+        select(GroupWorkflowStage).where(GroupWorkflowStage.id == workflow.current_stage_id)
+    )
+    if stage is None or stage.status != "awaiting_approval":
+        return None
+    group = await db.scalar(select(Group).where(Group.id == workflow.group_id))
+    if group is not None and group.decision_maker_participant_id is None:
+        from app.services.group_decision.seed import ensure_group_decision_maker_from_group
+
+        await ensure_group_decision_maker_from_group(
+            db,
+            group=group,
+            goal=group.description or group.name,
+            require_ready=False,
+        )
+    existing = await db.scalar(
+        select(GroupWorkflowEvent)
+        .where(
+            GroupWorkflowEvent.workflow_id == workflow.id,
+            GroupWorkflowEvent.event_type == "decision_action",
+            GroupWorkflowEvent.stage_id == stage.id,
+            GroupWorkflowEvent.dispatch_state.in_(("pending", "claimed", "dispatched")),
+        )
+        .order_by(GroupWorkflowEvent.created_at.desc())
+        .limit(1)
+    )
+    if existing is not None and existing.dispatch_state in {"pending", "claimed"}:
+        return existing
+    if existing is not None and existing.dispatch_state == "dispatched":
+        # Re-queue so a previously skipped/no-DM wake can fire after backfill.
+        existing.dispatch_state = "pending"
+        existing.dispatched_at = None
+        await db.flush()
+        return existing
+    return await _decision_action(db, workflow=workflow, stage=stage, kind="approval_required")
 
 
 async def _locked_item(db: AsyncSession, item_id: uuid.UUID) -> tuple[GroupWorkflow, GroupWorkflowStage, GroupWorkflowItem]:
@@ -381,29 +481,6 @@ async def _reconcile(db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupW
         await _notify_okr(workflow, "approval_required", stage)
         return WorkflowTransition(workflow, stage, None, action)
     return await _complete_stage(db, workflow=workflow, stage=stage, source="workflow")
-
-
-async def _decision_action(
-    db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupWorkflowStage, kind: str,
-) -> GroupWorkflowEvent | None:
-    group = await db.scalar(select(Group).where(Group.id == workflow.group_id))
-    if group is None or group.decision_maker_participant_id is None:
-        return None
-    payload = {
-        "kind": kind,
-        "stage_title": stage.title,
-        "decision_maker_participant_id": str(group.decision_maker_participant_id),
-    }
-    return await _event(
-        db,
-        workflow=workflow,
-        event_type="decision_action",
-        source="workflow",
-        idempotency_key=f"decision:{workflow.version}:{kind}:{stage.id}",
-        stage_id=stage.id,
-        dispatch=True,
-        payload=payload,
-    )
 
 
 async def confirm_stage(

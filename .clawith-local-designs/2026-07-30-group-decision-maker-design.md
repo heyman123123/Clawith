@@ -1,7 +1,7 @@
 # 群决策者（Decision Maker）— 设计
 
 日期：2026-07-30  
-状态：已定稿（实现中）  
+状态：已实现（待联调 / alembic upgrade）  
 分支：`feat/add-flow`（或后续功能分支）
 
 ## 背景与问题

@@ -6,6 +6,7 @@ import { aiMonitoringApi } from '../../services/aiMonitoringApi';
 import { useAuthStore } from '../../stores';
 import AIInteractionDetailDrawer from '../../components/AIInteractionDetailDrawer';
 import AIInteractionList from '../../components/AIInteractionList';
+import { AIMonitoringStatsTable } from '../../components/AIMonitoringCenter';
 import { groupApi } from '../../services/groupApi';
 import GroupTextFileEditor from './GroupTextFileEditor';
 import GroupWorkspaceTab from './GroupWorkspaceTab';
@@ -20,9 +21,9 @@ const PANEL_WIDTH_KEY = 'groups.panelWidth';
 // Default sized by measurement, not taste: a long realistic member name — 12 CJK chars plus the
 // "Manager" badge — measures ~221px, and the row chrome (16*2 body padding + 24 avatar + 8 gap)
 // adds 64, so ~285px fits it on one line; 300 leaves a little slack. Min/max bound the drag.
-const PANEL_DEFAULT_WIDTH = 300;
-const PANEL_MIN_WIDTH = 240;
-const PANEL_MAX_WIDTH = 520;
+const PANEL_DEFAULT_WIDTH = 360;
+const PANEL_MIN_WIDTH = 280;
+const PANEL_MAX_WIDTH = 560;
 
 const clampWidth = (value: number) =>
     Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, value));
@@ -280,11 +281,13 @@ export default function GroupSidePanel({
                             </div>
                         </>
                     ) : (
-                        <GroupAgentStatsList
+                        <AIMonitoringStatsTable
+                            kind="agent"
+                            compact
                             rows={agentStats.data?.agents ?? []}
                             loading={agentStats.isLoading}
                             error={agentStats.isError}
-                            onSelect={(row) => { setSelectedAgent(row); setMonitoringPage(1); }}
+                            onSelectAgent={(row) => { setSelectedAgent(row); setMonitoringPage(1); }}
                         />
                     )}
                 </div>}
@@ -315,48 +318,3 @@ export default function GroupSidePanel({
     );
 }
 
-function GroupAgentStatsList({
-    rows, loading, error, onSelect,
-}: {
-    rows: AIAgentStatsRow[];
-    loading?: boolean;
-    error?: boolean;
-    onSelect: (row: AIAgentStatsRow) => void;
-}) {
-    const { t } = useTranslation();
-    const formatTokens = (value: number) => value >= 1_000 ? `${(value / 1_000).toFixed(1)}K` : String(value || 0);
-    if (loading) return <div style={{ padding: '12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>{t('common.loading')}</div>;
-    if (error) return <div style={{ padding: '12px', color: 'var(--error)', fontSize: '12px' }}>{t('dashboard.aiMonitoring.loadFailed')}</div>;
-    if (rows.length === 0) return <div style={{ padding: '12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>{t('dashboard.aiMonitoring.empty')}</div>;
-    return <div>
-        {rows.map((row) => (
-            <button
-                key={row.agent_id ?? 'platform'}
-                type="button"
-                onClick={() => onSelect(row)}
-                style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr auto',
-                    gap: '8px',
-                    width: '100%',
-                    border: 0,
-                    borderTop: '1px solid var(--border-subtle)',
-                    background: 'transparent',
-                    color: 'var(--text-secondary)',
-                    textAlign: 'left',
-                    padding: '10px 12px',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                }}
-            >
-                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {row.agent_name || t('dashboard.aiMonitoring.platform')}
-                </span>
-                <span style={{ color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                    {row.calls} · {formatTokens(row.total_tokens)}
-                    {row.failures > 0 ? ` · ${row.failures}✗` : ''}
-                </span>
-            </button>
-        ))}
-    </div>;
-}

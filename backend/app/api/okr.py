@@ -132,6 +132,11 @@ async def _get_or_create_settings(db, tenant_id: uuid.UUID) -> OKRSettings:
 
 async def _sync_okr_report_triggers(db, settings: OKRSettings) -> None:
     """Keep OKR Agent system triggers aligned with tenant report settings."""
+    from app.services.okr_settings_helpers import calendar_collection_active
+
+    def _calendar_collection_enabled(value: OKRSettings) -> bool:
+        return calendar_collection_active(value)
+
     if not settings.okr_agent_id:
         return
 
@@ -196,7 +201,7 @@ async def _sync_okr_report_triggers(db, settings: OKRSettings) -> None:
     _ensure_trigger(
         "daily_okr_collection",
         config={"expr": f"{daily_minute} {daily_hour} * * *"},
-        is_enabled=bool(settings.enabled and settings.daily_report_enabled),
+        is_enabled=_calendar_collection_enabled(settings),
         reason=(
             "System trigger: daily OKR collection. When daily reporting is enabled, "
             "the OKR Agent should collect today's final daily update only from members "
@@ -337,6 +342,9 @@ class OKRSettingsOut(BaseModel):
     period_frequency_locked: bool = False
     # OKR Agent UUID for the chat-link button in the UI
     okr_agent_id: str | None = None
+    push_cadence: str = "both"
+    workflow_trigger_events: list[str] = ["stage_completed", "workflow_completed"]
+    excluded_group_ids: list[str] = []
 
 
 class OKRSettingsUpdate(BaseModel):
@@ -348,6 +356,14 @@ class OKRSettingsUpdate(BaseModel):
     weekly_report_day: int | None = None
     period_frequency: str | None = None
     period_length_days: int | None = None
+    push_cadence: str | None = None
+    workflow_trigger_events: list[str] | None = None
+    excluded_group_ids: list[str] | None = None
+
+
+class WorkflowGroupOptionOut(BaseModel):
+    id: str
+    name: str
 
 
 class KeyResultOut(BaseModel):
@@ -481,29 +497,59 @@ class CompanyReportRegenerate(BaseModel):
 # ─── Settings ─────────────────────────────────────────────────────────────────
 
 
+def _settings_payload(settings: OKRSettings) -> OKRSettingsOut:
+    from app.services.okr_settings_helpers import (
+        normalize_excluded_group_ids,
+        normalize_push_cadence,
+        normalize_workflow_events,
+    )
+
+    return OKRSettingsOut(
+        enabled=settings.enabled,
+        first_enabled_at=settings.first_enabled_at.isoformat() if settings.first_enabled_at else None,
+        daily_report_enabled=settings.daily_report_enabled,
+        daily_report_time=settings.daily_report_time,
+        daily_report_skip_non_workdays=settings.daily_report_skip_non_workdays,
+        weekly_report_enabled=False,
+        weekly_report_day=0,
+        period_frequency=settings.period_frequency,
+        period_length_days=settings.period_length_days,
+        period_frequency_locked=settings.first_enabled_at is not None,
+        okr_agent_id=str(settings.okr_agent_id) if settings.okr_agent_id else None,
+        push_cadence=normalize_push_cadence(getattr(settings, "push_cadence", None)),
+        workflow_trigger_events=normalize_workflow_events(getattr(settings, "workflow_trigger_events", None)),
+        excluded_group_ids=normalize_excluded_group_ids(getattr(settings, "excluded_group_ids", None)),
+    )
+
+
 @router.get("/settings", response_model=OKRSettingsOut)
 async def get_okr_settings(user=Depends(get_current_user)):
     """Return OKR configuration for the current tenant."""
     async with async_session() as db:
         settings = await _get_or_create_settings(db, user.tenant_id)
-
-        # Also resolve the OKR Agent ID so the UI can show the chat button
-        okr_agent_id_str = str(settings.okr_agent_id) if settings.okr_agent_id else None
-
         await db.commit()
-        return OKRSettingsOut(
-            enabled=settings.enabled,
-            first_enabled_at=settings.first_enabled_at.isoformat() if settings.first_enabled_at else None,
-            daily_report_enabled=settings.daily_report_enabled,
-            daily_report_time=settings.daily_report_time,
-            daily_report_skip_non_workdays=settings.daily_report_skip_non_workdays,
-            weekly_report_enabled=False,
-            weekly_report_day=0,
-            period_frequency=settings.period_frequency,
-            period_length_days=settings.period_length_days,
-            period_frequency_locked=settings.first_enabled_at is not None,
-            okr_agent_id=okr_agent_id_str,
-        )
+        return _settings_payload(settings)
+
+
+@router.get("/settings/workflow-groups", response_model=list[WorkflowGroupOptionOut])
+async def list_okr_workflow_groups(user=Depends(get_current_user)):
+    """Groups that currently have a workflow (candidates for exclusion)."""
+    from app.models.group import Group
+    from app.models.group_workflow import GroupWorkflow
+
+    async with async_session() as db:
+        rows = (
+            await db.execute(
+                select(Group.id, Group.name)
+                .join(GroupWorkflow, GroupWorkflow.group_id == Group.id)
+                .where(
+                    Group.tenant_id == user.tenant_id,
+                    Group.deleted_at.is_(None),
+                )
+                .order_by(Group.name)
+            )
+        ).all()
+    return [WorkflowGroupOptionOut(id=str(group_id), name=name) for group_id, name in rows]
 
 
 @router.put("/settings", response_model=OKRSettingsOut)
@@ -542,6 +588,18 @@ async def update_okr_settings(body: OKRSettingsUpdate, user=Depends(get_current_
             settings.period_frequency = body.period_frequency
         if body.period_length_days is not None:
             settings.period_length_days = body.period_length_days
+        if body.push_cadence is not None:
+            from app.services.okr_settings_helpers import normalize_push_cadence
+
+            settings.push_cadence = normalize_push_cadence(body.push_cadence)
+        if body.workflow_trigger_events is not None:
+            from app.services.okr_settings_helpers import normalize_workflow_events
+
+            settings.workflow_trigger_events = normalize_workflow_events(body.workflow_trigger_events)
+        if body.excluded_group_ids is not None:
+            from app.services.okr_settings_helpers import normalize_excluded_group_ids
+
+            settings.excluded_group_ids = normalize_excluded_group_ids(body.excluded_group_ids)
 
         # Member reporting is daily-only in the redesigned OKR workflow.
         settings.weekly_report_enabled = False
@@ -556,8 +614,6 @@ async def update_okr_settings(body: OKRSettingsUpdate, user=Depends(get_current_
         # ── Auto-create OKR Agent when first enabled ──────────────────────────
         # If OKR was just turned on and no agent exists yet for this tenant,
         # seed one so the user doesn't see "OKR Agent not found".
-        okr_agent_id_str: str | None = str(settings.okr_agent_id) if settings.okr_agent_id else None
-
         if body.enabled and not settings.okr_agent_id:
             from app.services.agent_seeder import seed_okr_agent_for_tenant
             logger.info(f"[OKR] OKR enabled for tenant {user.tenant_id} — auto-seeding OKR Agent")
@@ -568,21 +624,12 @@ async def update_okr_settings(body: OKRSettingsUpdate, user=Depends(get_current_
                 refreshed = await _get_or_create_settings(db2, user.tenant_id)
                 await _sync_okr_report_triggers(db2, refreshed)
                 await db2.commit()
-                okr_agent_id_str = str(refreshed.okr_agent_id) if refreshed.okr_agent_id else None
+                return _settings_payload(refreshed)
 
-        return OKRSettingsOut(
-            enabled=settings.enabled,
-            first_enabled_at=settings.first_enabled_at.isoformat() if settings.first_enabled_at else None,
-            daily_report_enabled=settings.daily_report_enabled,
-            daily_report_time=settings.daily_report_time,
-            daily_report_skip_non_workdays=settings.daily_report_skip_non_workdays,
-            weekly_report_enabled=False,
-            weekly_report_day=0,
-            period_frequency=settings.period_frequency,
-            period_length_days=settings.period_length_days,
-            period_frequency_locked=settings.first_enabled_at is not None,
-            okr_agent_id=okr_agent_id_str,
-        )
+        # Re-load after commit so response includes normalized JSON fields.
+        async with async_session() as db3:
+            refreshed = await _get_or_create_settings(db3, user.tenant_id)
+            return _settings_payload(refreshed)
 
 
 # ─── Sync Relationships ───────────────────────────────────────────────────────

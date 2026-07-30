@@ -16,17 +16,36 @@ from app.services.group_workflow.worker import build_leader_wake_content
 
 
 def test_approval_wake_mentions_human_confirm_targets() -> None:
+    pid = str(uuid.uuid4())
     content = build_leader_wake_content(
         {
             "kind": "approval_required",
             "stage_title": "验收",
             "item_title": "合并报告",
-            "confirm_targets": [{"participant_id": str(uuid.uuid4()), "display_name": "Alice"}],
+            "confirm_targets": [{"participant_id": pid, "display_name": "Alice"}],
         }
     )
-    assert "需人类确认" in content
+    assert "需确认" in content
     assert "@Alice" in content
-    assert "禁止干等" in content
+    assert "at 工具" in content
+    assert "invalid_group_at" in content
+    assert "不要等待心跳" in content
+
+
+def test_approval_wake_defers_to_decision_maker() -> None:
+    dm_id = str(uuid.uuid4())
+    content = build_leader_wake_content(
+        {
+            "kind": "approval_required",
+            "stage_title": "验收",
+            "decision_maker": {"participant_id": dm_id, "display_name": "决策者小D"},
+            "confirm_targets": [],
+        }
+    )
+    assert "待决策者拍板" in content
+    assert "决策者小D" in content
+    assert "不要自行向人类征求项目级拍板" in content
+    assert "at 工具" in content
 
 
 def test_daily_digest_wake_is_confirmation_only() -> None:
@@ -132,4 +151,21 @@ def test_leader_instruction_requires_immediate_human_ping() -> None:
     )
     assert "Never wait for heartbeat" in text
     assert "@Bob" in text
-    assert "Do not silently wait" in text
+    assert "decision maker" in text
+    assert "`at` tool" in text
+
+
+def test_leader_instruction_pings_decision_maker_on_approval() -> None:
+    dm_id = str(uuid.uuid4())
+    text = _leader_workflow_instruction(
+        {
+            "kind": "approval_required",
+            "decision_maker": {"participant_id": dm_id, "display_name": "小D"},
+            "confirm_targets": [],
+        }
+    )
+    assert "Never wait for heartbeat" in text
+    assert dm_id in text
+    assert "@小D" in text
+    assert "group_decision_classify_and_act" in text
+    assert "do NOT ask humans" in text or "Do not solicit" in text

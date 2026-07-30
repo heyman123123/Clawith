@@ -749,8 +749,13 @@ async def _ensure_okr_tool_rows_exist(required_tool_names: list[str]) -> dict[st
 
 async def _sync_okr_triggers_with_settings(db, agent_id: uuid.UUID, settings: OKRSettings | None) -> bool:
     """Align existing OKR system triggers with tenant report settings."""
+    from app.services.okr_settings_helpers import calendar_collection_active
+
     if not settings:
         return False
+
+    def _calendar_collection_enabled(value: OKRSettings) -> bool:
+        return calendar_collection_active(value)
 
     changed = False
     daily_hour, daily_minute = 18, 0
@@ -778,7 +783,7 @@ async def _sync_okr_triggers_with_settings(db, agent_id: uuid.UUID, settings: OK
     desired = {
         "daily_okr_collection": {
             "config": {"expr": f"{daily_minute} {daily_hour} * * *"},
-            "is_enabled": bool(settings.enabled and settings.daily_report_enabled),
+            "is_enabled": _calendar_collection_enabled(settings),
         },
         "daily_okr_report": {
             "config": {"expr": "0 9 * * *"},
