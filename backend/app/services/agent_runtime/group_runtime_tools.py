@@ -47,6 +47,7 @@ GROUP_WORKFLOW_SUBMIT_EVIDENCE = "group_workflow_submit_evidence"
 GROUP_WORKFLOW_BLOCK_ITEM = "group_workflow_block_item"
 GROUP_WORKFLOW_UNBLOCK_ITEM = "group_workflow_unblock_item"
 GROUP_WORKFLOW_REQUEST_APPROVAL = "group_workflow_request_approval"
+GROUP_DECISION_CLASSIFY_AND_ACT = "group_decision_classify_and_act"
 
 GROUP_BUSINESS_READ_TOOL_NAMES = frozenset(
     {
@@ -56,6 +57,7 @@ GROUP_BUSINESS_READ_TOOL_NAMES = frozenset(
         GROUP_WORKFLOW_READ,
     }
 )
+GROUP_DECISION_TOOL_NAMES = frozenset({GROUP_DECISION_CLASSIFY_AND_ACT})
 GROUP_BUSINESS_WRITE_TOOL_NAMES = frozenset({
     GROUP_WRITE_MEMORY,
     GROUP_WORKFLOW_START_ITEM,
@@ -63,7 +65,7 @@ GROUP_BUSINESS_WRITE_TOOL_NAMES = frozenset({
     GROUP_WORKFLOW_BLOCK_ITEM,
     GROUP_WORKFLOW_UNBLOCK_ITEM,
     GROUP_WORKFLOW_REQUEST_APPROVAL,
-})
+}) | GROUP_DECISION_TOOL_NAMES
 GROUP_BUSINESS_TOOL_NAMES = (
     GROUP_BUSINESS_READ_TOOL_NAMES | GROUP_BUSINESS_WRITE_TOOL_NAMES
 )
@@ -180,10 +182,15 @@ def with_group_runtime_tools(
             if isinstance(properties, dict):
                 properties["workspace_scope"] = deepcopy(_WORKSPACE_SCOPE_SCHEMA)
     names = {_tool_name(tool) for tool in resolved}
+    group_meta = group_context.get("group") if isinstance(group_context.get("group"), Mapping) else {}
+    is_decision_maker = bool(isinstance(group_meta, Mapping) and group_meta.get("is_decision_maker"))
+    allowed_business = set(GROUP_BUSINESS_TOOL_NAMES)
+    if not is_decision_maker:
+        allowed_business -= GROUP_DECISION_TOOL_NAMES
     resolved.extend(
         json.loads(json.dumps(tool))
         for tool in GROUP_RUNTIME_TOOL_DEFINITIONS
-        if _tool_name(tool) in GROUP_BUSINESS_TOOL_NAMES
+        if _tool_name(tool) in allowed_business
         and _tool_name(tool) not in names
     )
     return resolved
@@ -1350,6 +1357,41 @@ class GroupRuntimeToolService:
                     except group_workflow_service.GroupWorkflowServiceError as exc:
                         raise GroupRuntimeToolError(exc.code, str(exc)) from exc
                     value = await _workflow_read(db, group_id=group_id)
+                elif tool_name == GROUP_DECISION_CLASSIFY_AND_ACT:
+                    from app.models.group import Group
+                    from app.services.group_decision import service as decision_service
+
+                    group = await db.scalar(select(Group).where(Group.id == group_id))
+                    if group is None or group.decision_maker_participant_id != participant_id:
+                        raise GroupRuntimeToolError(
+                            "decision_maker_required",
+                            "Only the group decision maker can classify decisions",
+                        )
+                    stage_id = None
+                    workflow_id = None
+                    if arguments.get("stage_id"):
+                        stage_id = _uuid_argument(arguments, "stage_id")
+                    if arguments.get("workflow_id"):
+                        workflow_id = _uuid_argument(arguments, "workflow_id")
+                    try:
+                        decision = await decision_service.classify_and_act(
+                            db,
+                            group_id=group_id,
+                            category=_string_argument(arguments, "category", required=True),
+                            title=_string_argument(arguments, "title", required=True),
+                            summary=_string_argument(arguments, "summary", required=False),
+                            recommendation=_string_argument(
+                                arguments, "recommendation", required=False
+                            )
+                            or None,
+                            workflow_id=workflow_id,
+                            stage_id=stage_id,
+                        )
+                    except decision_service.GroupDecisionError as exc:
+                        raise GroupRuntimeToolError(exc.code, str(exc)) from exc
+                    except group_workflow_service.GroupWorkflowServiceError as exc:
+                        raise GroupRuntimeToolError(exc.code, str(exc)) from exc
+                    value = decision_service.decision_to_dict(decision)
                 elif tool_name == GROUP_LIST_WORKSPACE:
                     entries = await group_file_service.list_workspace(
                         db,

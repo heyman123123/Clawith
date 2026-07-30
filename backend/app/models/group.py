@@ -58,6 +58,18 @@ class Group(Base):
         ),
         nullable=True,
     )
+    # Project-level decision agent (separate from leader). Null = human-only confirm.
+    decision_maker_participant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "participants.id",
+            name="fk_groups_decision_maker_participant_id_participants",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
+    # null = all human managers; [] = no reports; list of UUID strings = explicit recipients
+    decision_report_participant_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

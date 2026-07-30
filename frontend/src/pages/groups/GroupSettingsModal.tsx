@@ -36,20 +36,70 @@ export default function GroupSettingsModal({
     const toast = useToast();
     const [name, setName] = useState(group.name);
     const [description, setDescription] = useState(group.description ?? '');
+    const [decisionMakerId, setDecisionMakerId] = useState(group.decision_maker_participant_id ?? '');
+    const [reportMode, setReportMode] = useState<'all_managers' | 'none' | 'custom'>(() => {
+        if (group.decision_report_participant_ids === null || group.decision_report_participant_ids === undefined) {
+            return 'all_managers';
+        }
+        if (group.decision_report_participant_ids.length === 0) return 'none';
+        return 'custom';
+    });
+    const [reportIds, setReportIds] = useState<string[]>(group.decision_report_participant_ids ?? []);
     const [saving, setSaving] = useState(false);
     const [removing, setRemoving] = useState<GroupMember | null>(null);
 
-    const dirty = name.trim() !== group.name || description !== (group.description ?? '');
+    const dirty =
+        name.trim() !== group.name ||
+        description !== (group.description ?? '') ||
+        (decisionMakerId || null) !== (group.decision_maker_participant_id || null) ||
+        reportMode !== (
+            group.decision_report_participant_ids == null
+                ? 'all_managers'
+                : group.decision_report_participant_ids.length === 0
+                    ? 'none'
+                    : 'custom'
+        ) ||
+        (reportMode === 'custom' &&
+            JSON.stringify([...reportIds].sort()) !==
+                JSON.stringify([...(group.decision_report_participant_ids ?? [])].sort()));
 
     const leader = members.find((member) => member.participant_id === group.leader_participant_id);
-    const people = members.filter((member) => member.participant_type === 'user' && member !== leader);
-    const agents = members.filter((member) => member.participant_type === 'agent' && member !== leader);
+    const decisionMaker = members.find((member) => member.participant_id === group.decision_maker_participant_id);
+    const people = members.filter(
+        (member) =>
+            member.participant_type === 'user' &&
+            member !== leader &&
+            member.participant_id !== group.decision_maker_participant_id,
+    );
+    const agents = members.filter(
+        (member) =>
+            member.participant_type === 'agent' &&
+            member !== leader &&
+            member.participant_id !== group.decision_maker_participant_id,
+    );
+    const agentMembers = members.filter((member) => member.participant_type === 'agent');
+    const humanMembers = members.filter((member) => member.participant_type === 'user');
 
     const saveProfile = async () => {
         if (!name.trim() || saving) return;
         setSaving(true);
         try {
-            await groupApi.update(group.id, { name: name.trim(), description });
+            const payload: {
+                name: string;
+                description: string;
+                decision_maker_participant_id?: string | null;
+                decision_report_participant_ids?: string[] | null;
+            } = { name: name.trim(), description };
+            if ((decisionMakerId || null) !== (group.decision_maker_participant_id || null)) {
+                payload.decision_maker_participant_id = decisionMakerId || null;
+            }
+            const nextReport =
+                reportMode === 'all_managers' ? null : reportMode === 'none' ? [] : reportIds;
+            const prevReport = group.decision_report_participant_ids ?? null;
+            if (JSON.stringify(nextReport) !== JSON.stringify(prevReport)) {
+                payload.decision_report_participant_ids = nextReport;
+            }
+            await groupApi.update(group.id, payload);
             toast.success(t('groups.settingsSaved', '已保存'));
             onUpdated();
         } catch (error: any) {
@@ -87,6 +137,9 @@ export default function GroupSettingsModal({
                     )}
                     {member.participant_id === group.leader_participant_id && (
                         <span className="group-badge-leader">{t('groups.teamBuilderLeader', '群主')}</span>
+                    )}
+                    {member.participant_id === group.decision_maker_participant_id && (
+                        <span className="group-badge-leader">{t('groups.decisionMaker', '决策者')}</span>
                     )}
                     {member.is_deleted && (
                         <span className="group-badge-deleted">{t('groups.deletedBadge', '已删除')}</span>
@@ -162,6 +215,75 @@ export default function GroupSettingsModal({
                         </div>
                     </div>
 
+                    {isManager && (
+                        <div className="group-settings-section">
+                            <label className="group-settings-label" htmlFor="group-decision-maker">
+                                {t('groups.decisionMaker', '决策者')}
+                            </label>
+                            <select
+                                id="group-decision-maker"
+                                className="group-settings-input"
+                                value={decisionMakerId}
+                                onChange={(event) => setDecisionMakerId(event.target.value)}
+                            >
+                                <option value="">{t('groups.decisionMakerNone', '未绑定（仅人类确认）')}</option>
+                                {agentMembers.map((member) => (
+                                    <option key={member.participant_id} value={member.participant_id}>
+                                        {member.display_name}
+                                    </option>
+                                ))}
+                            </select>
+                            {decisionMaker && (
+                                <div className="group-member-hint">
+                                    {t('groups.decisionMakerHint', '当前：{{name}}', {
+                                        name: decisionMaker.display_name,
+                                    })}
+                                </div>
+                            )}
+
+                            <label className="group-settings-label" htmlFor="group-report-mode">
+                                {t('groups.decisionReportRecipients', '决策汇报对象')}
+                            </label>
+                            <select
+                                id="group-report-mode"
+                                className="group-settings-input"
+                                value={reportMode}
+                                onChange={(event) =>
+                                    setReportMode(event.target.value as 'all_managers' | 'none' | 'custom')
+                                }
+                            >
+                                <option value="all_managers">
+                                    {t('groups.reportAllManagers', '全部人类群管理（默认）')}
+                                </option>
+                                <option value="none">{t('groups.reportNone', '不发送汇报')}</option>
+                                <option value="custom">{t('groups.reportCustom', '指定成员')}</option>
+                            </select>
+                            {reportMode === 'custom' && (
+                                <div className="group-settings-report-list">
+                                    {humanMembers.map((member) => {
+                                        const checked = reportIds.includes(member.participant_id);
+                                        return (
+                                            <label key={member.participant_id} className="group-member-row">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={checked}
+                                                    onChange={() => {
+                                                        setReportIds((prev) =>
+                                                            checked
+                                                                ? prev.filter((id) => id !== member.participant_id)
+                                                                : [...prev, member.participant_id],
+                                                        );
+                                                    }}
+                                                />
+                                                <span>{member.display_name}</span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     <div className="group-settings-section">
                         <div className="group-settings-section-head">
                             <span className="group-settings-label">
@@ -179,6 +301,14 @@ export default function GroupSettingsModal({
                                 {t('groups.teamBuilderLeader', '群主')}
                             </div>
                             {renderMember(leader)}
+                        </>}
+
+                        {decisionMaker && decisionMaker !== leader && <>
+                            <div className="group-panel-label">
+                                <IconRobot size={12} stroke={1.7} />
+                                {t('groups.decisionMaker', '决策者')}
+                            </div>
+                            {renderMember(decisionMaker)}
                         </>}
 
                         {agents.length > 0 && (

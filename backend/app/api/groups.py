@@ -53,11 +53,14 @@ class CreateGroupIn(BaseModel):
     description: str | None = None
     member_participant_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
     leader_participant_id: uuid.UUID | None = None
+    decision_maker_participant_id: uuid.UUID | None = None
 
 
 class PatchGroupIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
+    decision_maker_participant_id: uuid.UUID | None = None
+    decision_report_participant_ids: list[uuid.UUID] | None = None
 
 
 class GroupOut(BaseModel):
@@ -69,6 +72,8 @@ class GroupOut(BaseModel):
     description: str | None = None
     created_by_participant_id: uuid.UUID
     leader_participant_id: uuid.UUID | None = None
+    decision_maker_participant_id: uuid.UUID | None = None
+    decision_report_participant_ids: list[str] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -531,6 +536,37 @@ async def create_group(
             db,
             **create_kwargs,
         )
+        if body.decision_maker_participant_id is not None:
+            from app.services.group_decision.seed import rebind_decision_maker
+
+            try:
+                await rebind_decision_maker(
+                    db,
+                    tenant_id=tenant_id,
+                    group=group,
+                    decision_maker_participant_id=body.decision_maker_participant_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "decision_maker_invalid", "message": str(exc)},
+                ) from exc
+        else:
+            from app.services.group_decision.seed import ensure_group_decision_maker
+            import logging
+
+            try:
+                await ensure_group_decision_maker(
+                    db,
+                    tenant_id=tenant_id,
+                    group=group,
+                    creator=current_user,
+                    goal=body.description or body.name,
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to seed decision maker for group %s", group.id
+                )
     except GroupChatServiceError as exc:
         raise _translate_domain_error(exc) from exc
     audit_details = {
@@ -540,6 +576,8 @@ async def create_group(
     }
     if body.leader_participant_id is not None:
         audit_details["leader_participant_id"] = str(body.leader_participant_id)
+    if group.decision_maker_participant_id is not None:
+        audit_details["decision_maker_participant_id"] = str(group.decision_maker_participant_id)
     _stage_audit(
         db,
         current_user=current_user,
@@ -617,7 +655,13 @@ async def patch_group(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if "name" not in body.model_fields_set and "description" not in body.model_fields_set:
+    allowed = {
+        "name",
+        "description",
+        "decision_maker_participant_id",
+        "decision_report_participant_ids",
+    }
+    if not (body.model_fields_set & allowed):
         raise HTTPException(status_code=400, detail="At least one field must be supplied")
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -631,6 +675,32 @@ async def patch_group(
             description=body.description,
             update_description="description" in body.model_fields_set,
         )
+        if "decision_maker_participant_id" in body.model_fields_set:
+            if body.decision_maker_participant_id is None:
+                group.decision_maker_participant_id = None
+            else:
+                from app.services.group_decision.seed import rebind_decision_maker
+
+                try:
+                    await rebind_decision_maker(
+                        db,
+                        tenant_id=tenant_id,
+                        group=group,
+                        decision_maker_participant_id=body.decision_maker_participant_id,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"code": "decision_maker_invalid", "message": str(exc)},
+                    ) from exc
+        if "decision_report_participant_ids" in body.model_fields_set:
+            if body.decision_report_participant_ids is None:
+                group.decision_report_participant_ids = None
+            else:
+                group.decision_report_participant_ids = [
+                    str(item) for item in body.decision_report_participant_ids
+                ]
+            await db.flush()
     except GroupChatServiceError as exc:
         raise _translate_domain_error(exc) from exc
     _stage_audit(

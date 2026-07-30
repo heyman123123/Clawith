@@ -52,9 +52,9 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
     human_ref = ", ".join(names) if names else "the group human manager"
     if kind == "approval_required":
         return (
-            f"{base} Approval gate is active: immediately @ {human_ref} in the group chat, "
-            "state the confirmation items publicly, and keep chasing members for missing evidence. "
-            "Do not silently wait for approval."
+            f"{base} Approval gate is active: the decision maker (or a human manager) confirms stages. "
+            "Keep chasing members for missing evidence and publicly state confirmation items. "
+            f"If humans must override, @ {human_ref}. Do not silently wait."
         )
     if kind == "blocker":
         return (
@@ -395,12 +395,25 @@ class GroupContextBuilder:
                 GroupWorkflowEvent.dispatch_state.in_(("pending", "claimed", "dispatched")),
             ).order_by(GroupWorkflowEvent.created_at.desc()).limit(1))
             is_leader = group.leader_participant_id == target_participant_id
+            is_decision_maker = group.decision_maker_participant_id == target_participant_id
             action_payload = dict(leader_action.payload or {}) if leader_action is not None else {}
             confirm_targets = action_payload.get("confirm_targets") if isinstance(action_payload.get("confirm_targets"), list) else []
+            if is_decision_maker:
+                instruction = (
+                    "You are the group decision maker. Classify pending stage decisions with "
+                    "group_decision_classify_and_act. Routine → auto-confirm; "
+                    "human_comms / external_deploy / finance / uncertain → DM managers for approval. "
+                    "Always report after a final decision. Do not perform external deploy or finance actions."
+                )
+            elif is_leader:
+                instruction = _leader_workflow_instruction(action_payload)
+            else:
+                instruction = "Use structured workflow tools to record work, evidence, and blockers."
             workflow_context = {
                 "workflow_id": str(workflow.id),
                 "status": workflow.status,
                 "current_stage_id": str(workflow.current_stage_id) if workflow.current_stage_id else None,
+                "is_decision_maker": is_decision_maker,
                 "stages": [
                     {"id": str(stage.id), "title": stage.title, "status": stage.status,
                      "requires_approval": stage.requires_approval}
@@ -421,11 +434,7 @@ class GroupContextBuilder:
                     }
                     if leader_action else None
                 ),
-                "instruction": (
-                    _leader_workflow_instruction(action_payload)
-                    if is_leader
-                    else "Use structured workflow tools to record work, evidence, and blockers."
-                ),
+                "instruction": instruction,
             }
 
         group_context: JsonObject = {
@@ -447,6 +456,13 @@ class GroupContextBuilder:
                 "group_id": str(group.id),
                 "name": group.name,
                 "description": group.description or "",
+                "leader_participant_id": str(group.leader_participant_id)
+                if group.leader_participant_id
+                else None,
+                "decision_maker_participant_id": str(group.decision_maker_participant_id)
+                if group.decision_maker_participant_id
+                else None,
+                "is_decision_maker": group.decision_maker_participant_id == target_participant_id,
             },
             "session": {
                 "session_id": str(session.id),

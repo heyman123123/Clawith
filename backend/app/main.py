@@ -409,6 +409,7 @@ from app.api.gateway import router as gateway_router
 from app.api.google_workspace import router as google_workspace_router
 from app.api.group_websocket import router as group_ws_router
 from app.api.group_workflows import router as group_workflows_router
+from app.api.group_decisions import router as group_decisions_router
 from app.api.groups import router as groups_router
 from app.api.messages import router as messages_router
 from app.api.notification import router as notification_router
@@ -474,6 +475,7 @@ app.include_router(groups_router)
 app.include_router(team_builder_router)
 app.include_router(ai_monitoring_router)
 app.include_router(group_workflows_router)
+app.include_router(group_decisions_router)
 app.include_router(plaza_router)
 app.include_router(experience_router)
 app.include_router(notification_router, prefix=settings.API_PREFIX)

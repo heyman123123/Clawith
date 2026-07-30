@@ -166,11 +166,86 @@ async def dispatch_leader_actions_once() -> bool:
     return True
 
 
+async def _claim_decision_action() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | None, uuid.UUID | None, dict] | None:
+    from app.models.group import Group
+
+    async with async_session() as db, db.begin():
+        result = await db.execute(
+            select(GroupWorkflowEvent, GroupWorkflow, Group.decision_maker_participant_id, ChatSession.id)
+            .join(GroupWorkflow, GroupWorkflow.id == GroupWorkflowEvent.workflow_id)
+            .join(Group, Group.id == GroupWorkflow.group_id)
+            .outerjoin(
+                ChatSession,
+                (ChatSession.group_id == GroupWorkflow.group_id)
+                & (ChatSession.session_type == "group")
+                & (ChatSession.is_primary.is_(True))
+                & (ChatSession.deleted_at.is_(None)),
+            )
+            .where(
+                GroupWorkflowEvent.event_type == "decision_action",
+                GroupWorkflowEvent.dispatch_state == "pending",
+            )
+            .order_by(GroupWorkflowEvent.created_at)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        event, workflow, decision_maker_participant_id, session_id = row
+        event.dispatch_state = "claimed"
+        return event.id, workflow.tenant_id, decision_maker_participant_id, session_id, dict(event.payload or {})
+
+
+async def dispatch_decision_actions_once() -> bool:
+    from app.services.group_decision.wake import build_decision_wake_content
+
+    claimed = await _claim_decision_action()
+    if claimed is None:
+        return False
+    event_id, tenant_id, decision_maker_participant_id, session_id, payload = claimed
+    if decision_maker_participant_id is None or session_id is None:
+        await _settle(event_id, dispatched=True)
+        return True
+    try:
+        async with async_session() as db, db.begin():
+            maker = await db.scalar(
+                select(Participant).where(Participant.id == decision_maker_participant_id)
+            )
+            if maker is None or maker.type != "agent":
+                await _settle(event_id, dispatched=True)
+                return True
+            workflow = await db.scalar(
+                select(GroupWorkflow)
+                .join(GroupWorkflowEvent, GroupWorkflowEvent.workflow_id == GroupWorkflow.id)
+                .where(GroupWorkflowEvent.id == event_id)
+            )
+            if workflow is None:
+                await _settle(event_id, dispatched=True)
+                return True
+            await group_message_service.enqueue_group_message(
+                db,
+                tenant_id=tenant_id,
+                group_id=workflow.group_id,
+                session_id=session_id,
+                sender_participant_id=decision_maker_participant_id,
+                mention_participant_ids=[decision_maker_participant_id],
+                message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"group-workflow-decision:{event_id}"),
+                content=build_decision_wake_content(payload),
+            )
+        await _settle(event_id, dispatched=True)
+    except Exception:
+        logger.exception("Group workflow decision action %s could not be dispatched", event_id)
+        await _settle(event_id, dispatched=False)
+    return True
+
+
 async def start_group_workflow_worker(scan_seconds: float = 2.0) -> None:
     logger.info("Group workflow worker started")
     last_digest_scan = 0.0
     while True:
         processed = await dispatch_leader_actions_once()
+        processed = await dispatch_decision_actions_once() or processed
         now = time.monotonic()
         if now - last_digest_scan >= _DIGEST_SCAN_SECONDS:
             try:
@@ -183,6 +258,7 @@ async def start_group_workflow_worker(scan_seconds: float = 2.0) -> None:
 
 __all__ = [
     "build_leader_wake_content",
+    "dispatch_decision_actions_once",
     "dispatch_leader_actions_once",
     "start_group_workflow_worker",
 ]

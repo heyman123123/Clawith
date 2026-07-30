@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +15,48 @@ from app.models.group_workflow import GroupWorkflow, GroupWorkflowEvent, GroupWo
 from app.models.participant import Participant
 from app.services.group_workflow.contracts import WorkflowPlan
 from app.services.group_workflow.templates import preset_workflow
+
+logger = logging.getLogger(__name__)
+
+
+async def _notify_okr(
+    workflow: GroupWorkflow,
+    event_key: str,
+    stage: GroupWorkflowStage | None = None,
+    *,
+    confirmed: bool = False,
+) -> None:
+    """OKR stage arrival is leader/manager confirmation — not auto evidence completion."""
+    # Auto stage transitions must not count as "arrived" for OKR push.
+    if event_key in {"stage_completed", "workflow_completed", "stage_activated"} and not confirmed:
+        return
+    try:
+        from app.services.okr_workflow_bridge import notify_workflow_event
+
+        await notify_workflow_event(
+            tenant_id=workflow.tenant_id,
+            group_id=workflow.group_id,
+            event_key=event_key,
+            workflow_id=workflow.id,
+            stage_id=stage.id if stage is not None else None,
+        )
+    except Exception:
+        logger.exception(
+            "OKR workflow notify failed workflow=%s event=%s", workflow.id, event_key
+        )
+
+
+async def _workflow_okr_requires_human_confirm(db: AsyncSession, *, tenant_id: uuid.UUID) -> bool:
+    """When project-progress OKR push is on, stage completion waits for human confirm."""
+    try:
+        from app.models.okr import OKRSettings
+        from app.services.okr_settings_helpers import workflow_push_active
+
+        settings = await db.scalar(select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
+        return settings is not None and workflow_push_active(settings)
+    except Exception:
+        logger.exception("Failed to resolve OKR workflow confirm gate for tenant=%s", tenant_id)
+        return False
 
 
 class GroupWorkflowServiceError(RuntimeError):
@@ -326,15 +369,50 @@ async def _reconcile(db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupW
         return WorkflowTransition(workflow, stage, None, await _leader_action(db, workflow=workflow, stage=stage, kind="blocker"))
     if not items or any(item.status != "done" for item in items):
         return WorkflowTransition(workflow, stage, None, None)
-    if stage.requires_approval:
+    needs_confirm = stage.requires_approval or await _workflow_okr_requires_human_confirm(
+        db, tenant_id=workflow.tenant_id
+    )
+    if needs_confirm:
         stage.status, workflow.status = "awaiting_approval", "awaiting_approval"
         workflow.version += 1
         action = await _leader_action(db, workflow=workflow, stage=stage, kind="approval_required")
+        await _decision_action(db, workflow=workflow, stage=stage, kind="approval_required")
+        # Optional OKR nudge while waiting; "arrival" events fire only after confirm.
+        await _notify_okr(workflow, "approval_required", stage)
         return WorkflowTransition(workflow, stage, None, action)
     return await _complete_stage(db, workflow=workflow, stage=stage, source="workflow")
 
 
-async def confirm_stage(db: AsyncSession, *, stage_id: uuid.UUID, actor_participant_id: uuid.UUID) -> WorkflowTransition:
+async def _decision_action(
+    db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupWorkflowStage, kind: str,
+) -> GroupWorkflowEvent | None:
+    group = await db.scalar(select(Group).where(Group.id == workflow.group_id))
+    if group is None or group.decision_maker_participant_id is None:
+        return None
+    payload = {
+        "kind": kind,
+        "stage_title": stage.title,
+        "decision_maker_participant_id": str(group.decision_maker_participant_id),
+    }
+    return await _event(
+        db,
+        workflow=workflow,
+        event_type="decision_action",
+        source="workflow",
+        idempotency_key=f"decision:{workflow.version}:{kind}:{stage.id}",
+        stage_id=stage.id,
+        dispatch=True,
+        payload=payload,
+    )
+
+
+async def confirm_stage(
+    db: AsyncSession,
+    *,
+    stage_id: uuid.UUID,
+    actor_participant_id: uuid.UUID,
+    allow_decision_maker: bool = False,
+) -> WorkflowTransition:
     result = await db.execute(select(GroupWorkflowStage).where(GroupWorkflowStage.id == stage_id).with_for_update())
     stage = result.scalar_one_or_none()
     if stage is None:
@@ -345,7 +423,22 @@ async def confirm_stage(db: AsyncSession, *, stage_id: uuid.UUID, actor_particip
         raise GroupWorkflowServiceError("workflow_paused", "Workflow is paused")
     if stage.status != "awaiting_approval":
         raise GroupWorkflowServiceError("workflow_stage_not_awaiting_approval", "Stage is not awaiting approval")
-    return await _complete_stage(db, workflow=workflow, stage=stage, source="human", actor_participant_id=actor_participant_id)
+
+    group = await db.scalar(select(Group).where(Group.id == workflow.group_id))
+    is_decision_maker = bool(
+        allow_decision_maker
+        and group is not None
+        and group.decision_maker_participant_id == actor_participant_id
+    )
+    if group is not None and group.leader_participant_id == actor_participant_id and not is_decision_maker:
+        raise GroupWorkflowServiceError(
+            "workflow_confirm_denied",
+            "Group leader cannot confirm stages; the decision maker or a human manager must confirm",
+        )
+    source = "decision_maker" if is_decision_maker else "human"
+    return await _complete_stage(
+        db, workflow=workflow, stage=stage, source=source, actor_participant_id=actor_participant_id
+    )
 
 
 async def _complete_stage(db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupWorkflowStage, source: str, actor_participant_id: uuid.UUID | None = None) -> WorkflowTransition:
@@ -353,6 +446,8 @@ async def _complete_stage(db: AsyncSession, *, workflow: GroupWorkflow, stage: G
     workflow.version += 1
     await _event(db, workflow=workflow, event_type="stage_completed", source=source, actor_participant_id=actor_participant_id,
                  stage_id=stage.id, idempotency_key=f"stage:{stage.id}:completed")
+    confirmed = source in {"human", "decision_maker"}
+    await _notify_okr(workflow, "stage_completed", stage, confirmed=confirmed)
     next_result = await db.execute(select(GroupWorkflowStage).where(
         GroupWorkflowStage.workflow_id == workflow.id, GroupWorkflowStage.position == stage.position + 1,
     ).with_for_update())
@@ -360,6 +455,7 @@ async def _complete_stage(db: AsyncSession, *, workflow: GroupWorkflow, stage: G
     if next_stage is None:
         workflow.status, workflow.current_stage_id = "completed", None
         action = await _leader_action(db, workflow=workflow, stage=stage, kind="workflow_completed")
+        await _notify_okr(workflow, "workflow_completed", stage, confirmed=confirmed)
         return WorkflowTransition(workflow, stage, None, action)
     next_stage.status, next_stage.started_at = "active", _now()
     workflow.status, workflow.current_stage_id = "active", next_stage.id
@@ -367,4 +463,5 @@ async def _complete_stage(db: AsyncSession, *, workflow: GroupWorkflow, stage: G
     await _event(db, workflow=workflow, event_type="stage_activated", source="workflow", stage_id=next_stage.id,
                  idempotency_key=f"stage:{next_stage.id}:activated")
     action = await _leader_action(db, workflow=workflow, stage=next_stage, kind="stage_activated")
+    await _notify_okr(workflow, "stage_activated", next_stage, confirmed=confirmed)
     return WorkflowTransition(workflow, stage, next_stage, action)

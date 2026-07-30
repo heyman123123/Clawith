@@ -8,6 +8,10 @@ export interface Group {
     created_by_participant_id: string;
     /** The orchestration agent for this group, when one is assigned. */
     leader_participant_id: string | null;
+    /** Project decision-maker agent (separate from leader). */
+    decision_maker_participant_id: string | null;
+    /** null = all human managers; [] = no reports; UUID strings = explicit recipients. */
+    decision_report_participant_ids: string[] | null;
     created_at: string;
     updated_at: string;
 }

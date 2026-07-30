@@ -239,6 +239,18 @@ async def provision_job(db: AsyncSession, *, job_id: uuid.UUID) -> TeamProvision
         job.group_id = group.id
         job.leader_participant_id = leader_participant_id
         job.session_id = session.id
+        try:
+            from app.services.group_decision.seed import ensure_group_decision_maker
+
+            await ensure_group_decision_maker(
+                db,
+                tenant_id=job.tenant_id,
+                group=group,
+                creator=user,
+                goal=validate_team_plan(draft.reviewed_plan).goal,
+            )
+        except Exception:
+            logger.exception("Failed to seed decision maker for team group %s", group.id)
         brief, roster = _team_documents(draft.reviewed_plan)
         await group_file_service.write_workspace_file(
             db,

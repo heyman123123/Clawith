@@ -3706,6 +3706,36 @@ _GROUP_BUILTIN_TOOL_SOURCE = [
         "parameters_schema": {"type": "object", "properties": {"item_id": {"type": "string", "format": "uuid"}, "evidence": {"type": "object", "minProperties": 1}, "expected_version": {"type": "integer", "minimum": 1}}, "required": ["item_id", "evidence"], "additionalProperties": False},
         "config": {}, "config_schema": {},
     },
+    {
+        "name": "group_decision_classify_and_act",
+        "display_name": "Classify And Act On Decision",
+        "description": (
+            "Decision maker only: classify a project decision and act. "
+            "category=routine auto-confirms the stage when stage_id is set and sends a report DM; "
+            "human_comms / external_deploy / finance / uncertain DMs human managers for approval."
+        ),
+        "category": "group",
+        "icon": "⚖️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["routine", "human_comms", "external_deploy", "finance", "uncertain"],
+                },
+                "title": {"type": "string", "minLength": 1},
+                "summary": {"type": "string"},
+                "recommendation": {"type": "string"},
+                "stage_id": {"type": "string", "format": "uuid"},
+                "workflow_id": {"type": "string", "format": "uuid"},
+            },
+            "required": ["category", "title"],
+            "additionalProperties": False,
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
 
@@ -3815,6 +3845,7 @@ _LOCAL_WRITE_TOOL_NAMES = frozenset(
         "group_workflow_block_item",
         "group_workflow_unblock_item",
         "group_workflow_request_approval",
+        "group_decision_classify_and_act",
     }
 )
 

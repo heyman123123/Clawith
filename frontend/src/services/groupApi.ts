@@ -48,8 +48,32 @@ export const groupApi = {
     }) =>
         fetchJson<Group>('/groups', { method: 'POST', body: JSON.stringify(data) }),
 
-    update: (groupId: string, data: { name?: string; description?: string }) =>
-        fetchJson<Group>(`/groups/${groupId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    update: (
+        groupId: string,
+        data: {
+            name?: string;
+            description?: string;
+            decision_maker_participant_id?: string | null;
+            decision_report_participant_ids?: string[] | null;
+        },
+    ) => fetchJson<Group>(`/groups/${groupId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+    listDecisions: (groupId: string, status?: string) =>
+        fetchJson<Array<Record<string, unknown>>>(
+            `/groups/${groupId}/decisions${qs({ status })}`,
+        ),
+
+    approveDecision: (groupId: string, decisionId: string) =>
+        fetchJson<Record<string, unknown>>(`/groups/${groupId}/decisions/${decisionId}/approve`, {
+            method: 'POST',
+            body: '{}',
+        }),
+
+    rejectDecision: (groupId: string, decisionId: string, reason?: string) =>
+        fetchJson<Record<string, unknown>>(`/groups/${groupId}/decisions/${decisionId}/reject`, {
+            method: 'POST',
+            body: JSON.stringify({ reason }),
+        }),
 
     remove: (groupId: string) => fetchJson<void>(`/groups/${groupId}`, { method: 'DELETE' }),
 
