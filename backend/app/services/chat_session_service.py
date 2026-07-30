@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
@@ -167,9 +168,27 @@ async def ensure_primary_direct_session(
         is_primary=True,
         now=now,
     )
-    db.add(session)
-    await db.flush()
-    return session
+    try:
+        async with db.begin_nested():
+            db.add(session)
+            await db.flush()
+        return session
+    except IntegrityError:
+        # Concurrent creator won the primary-unique index; reuse the winner.
+        await db.flush()  # clear failed identity from nested savepoint
+        winner = await get_primary_direct_session(db, tenant_id, agent_id, user_id)
+        if winner is not None:
+            return winner
+        fallback = await db.execute(
+            _best_active_direct_session_statement(tenant_id, agent_id, user_id)
+        )
+        promoted = fallback.scalar_one_or_none()
+        if promoted is None:
+            raise
+        promoted.is_primary = True
+        promoted.updated_at = datetime.now(UTC)
+        await db.flush()
+        return promoted
 
 
 async def create_direct_session(

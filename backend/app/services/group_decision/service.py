@@ -308,25 +308,63 @@ async def apply_routine_decision(
         stage_id=stage_id,
         status="auto_applied",
     )
+    stage_outcome = "skipped"
     if confirm_stage and stage_id is not None:
+        stage_outcome = await _apply_stage_after_decision(
+            db,
+            group=group,
+            stage_id=stage_id,
+        )
+    try:
+        await send_decision_report(db, decision)
+    except Exception:
+        logger.exception("Decision report failed for %s", decision.id)
+    try:
+        await group_workflow_service.notify_leader_decision_resolved(
+            db,
+            group_id=group.id,
+            workflow_id=workflow_id or decision.workflow_id,
+            stage_id=stage_id or decision.stage_id,
+            title=decision.title,
+            status=decision.status,
+            summary=f"{decision.summary}\n[stage_outcome={stage_outcome}]",
+            category=decision.category,
+        )
+    except Exception:
+        logger.exception("Leader decision wake failed for %s", decision.id)
+    return decision
+
+
+async def _apply_stage_after_decision(
+    db: AsyncSession,
+    *,
+    group: Group,
+    stage_id: uuid.UUID,
+) -> str:
+    """Confirm awaiting stages; soft-handle stages that are not ready yet."""
+    stage = await db.scalar(
+        select(GroupWorkflowStage).where(GroupWorkflowStage.id == stage_id).with_for_update()
+    )
+    if stage is None:
+        return "stage_missing"
+    if stage.status == "awaiting_approval":
         await group_workflow_service.confirm_stage(
             db,
             stage_id=stage_id,
             actor_participant_id=group.decision_maker_participant_id,
             allow_decision_maker=True,
         )
-    await send_decision_report(db, decision)
-    await group_workflow_service.notify_leader_decision_resolved(
-        db,
-        group_id=group.id,
-        workflow_id=workflow_id or decision.workflow_id,
-        stage_id=stage_id or decision.stage_id,
-        title=decision.title,
-        status=decision.status,
-        summary=decision.summary,
-        category=decision.category,
+        return "confirmed"
+    if stage.status == "completed":
+        return "already_completed"
+    # Active/pending: decision is recorded, but evidence gate is not open yet.
+    # Do not raise — the leader must finish evidence / reconcile first.
+    logger.info(
+        "Decision maker recorded routine decision but stage %s is %s (not awaiting_approval)",
+        stage_id,
+        stage.status,
     )
-    return decision
+    return f"waiting_stage:{stage.status}"
 
 
 async def request_owner_confirm(

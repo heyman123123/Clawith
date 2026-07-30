@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.group import Group, GroupMember
@@ -93,9 +94,21 @@ async def _event(
         source=source, payload=payload or {}, idempotency_key=idempotency_key,
         dispatch_state="pending" if dispatch else "none",
     )
-    db.add(value)
-    await db.flush()
-    return value
+    try:
+        async with db.begin_nested():
+            db.add(value)
+            await db.flush()
+        return value
+    except IntegrityError:
+        raced = await db.scalar(
+            select(GroupWorkflowEvent).where(
+                GroupWorkflowEvent.workflow_id == workflow.id,
+                GroupWorkflowEvent.idempotency_key == idempotency_key,
+            )
+        )
+        if raced is not None:
+            return raced
+        raise
 
 
 async def create_workflow(
