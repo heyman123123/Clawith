@@ -10,13 +10,16 @@ import asyncio
 import hashlib
 import json
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable, Coroutine, Literal
 
 import httpx
 from loguru import logger
 
+from app.services.ai_monitoring import record_ai_interaction, usage_from_provider_or_estimate
 
 # ============================================================================
 # Errors and request-shape normalization
@@ -2629,15 +2632,33 @@ async def chat_complete(
 
     Returns response in OpenAI-compatible format for backward compatibility.
     """
-    client = create_llm_client(provider, api_key, model, base_url, timeout)
+    llm_messages = [LLMMessage(**message) for message in messages]
+    monitor_model = SimpleNamespace(provider=provider, model=model, id=None)
+    started_at = time.monotonic()
+    client = None
 
     try:
-        llm_messages = [LLMMessage(**m) for m in messages]
+        client = create_llm_client(provider, api_key, model, base_url, timeout)
         response = await client.complete(
             messages=llm_messages,
             tools=tools,
             temperature=temperature,
             max_tokens=max_tokens or get_max_tokens(provider, model),
+        )
+        usage, provider_usage_available = usage_from_provider_or_estimate(
+            response.usage,
+            llm_messages,
+            response.content,
+        )
+        await record_ai_interaction(
+            model=monitor_model,
+            messages=llm_messages,
+            tools=tools,
+            invocation_kind="complete",
+            usage=usage,
+            provider_usage_available=provider_usage_available,
+            response_content=response.content,
+            started_at=started_at,
         )
 
         return {
@@ -2652,8 +2673,19 @@ async def chat_complete(
             "model": response.model or model,
             "usage": response.usage or {},
         }
+    except Exception as exc:
+        await record_ai_interaction(
+            model=monitor_model,
+            messages=llm_messages,
+            tools=tools,
+            invocation_kind="complete",
+            error=exc,
+            started_at=started_at,
+        )
+        raise
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
 
 async def chat_stream(
@@ -2673,10 +2705,13 @@ async def chat_stream(
 
     Returns aggregated response in OpenAI-compatible format.
     """
-    client = create_llm_client(provider, api_key, model, base_url, timeout)
+    llm_messages = [LLMMessage(**message) for message in messages]
+    monitor_model = SimpleNamespace(provider=provider, model=model, id=None)
+    started_at = time.monotonic()
+    client = None
 
     try:
-        llm_messages = [LLMMessage(**m) for m in messages]
+        client = create_llm_client(provider, api_key, model, base_url, timeout)
         response = await client.stream(
             messages=llm_messages,
             tools=tools,
@@ -2684,6 +2719,21 @@ async def chat_stream(
             max_tokens=max_tokens or get_max_tokens(provider, model),
             on_chunk=on_chunk,
             on_thinking=on_thinking,
+        )
+        usage, provider_usage_available = usage_from_provider_or_estimate(
+            response.usage,
+            llm_messages,
+            response.content,
+        )
+        await record_ai_interaction(
+            model=monitor_model,
+            messages=llm_messages,
+            tools=tools,
+            invocation_kind="stream",
+            usage=usage,
+            provider_usage_available=provider_usage_available,
+            response_content=response.content,
+            started_at=started_at,
         )
 
         return {
@@ -2698,5 +2748,16 @@ async def chat_stream(
             "model": response.model or model,
             "usage": response.usage or {},
         }
+    except Exception as exc:
+        await record_ai_interaction(
+            model=monitor_model,
+            messages=llm_messages,
+            tools=tools,
+            invocation_kind="stream",
+            error=exc,
+            started_at=started_at,
+        )
+        raise
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()

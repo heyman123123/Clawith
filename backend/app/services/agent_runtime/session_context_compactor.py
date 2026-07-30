@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
 import json
 import math
-from typing import Protocol
 import uuid
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Protocol
 
 from sqlalchemy import select
 
@@ -30,11 +30,11 @@ from app.services.agent_runtime.session_context_service import (
     SessionContextSnapshot,
 )
 from app.services.agent_runtime.state import JsonObject, JsonValue
+from app.services.ai_monitoring import ai_interaction_scope
 from app.services.llm.client import LLMMessage
 from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
 from app.services.llm.utils import get_max_tokens
-
 
 _COMPACT_TOOL_NAME = "commit_session_context"
 _SYSTEM_PROMPT = """You compact one Clawith chat session into durable context.
@@ -437,11 +437,17 @@ class LLMSessionContextCompactor:
     async def compact(self, request: SessionCompactRequest) -> SessionContextCandidate:
         try:
             selection = await self._model_resolver(request)
-            return await self._compact_with_model(
-                request,
-                model=selection.primary,
-                usage_agent_id=selection.usage_agent_id,
-            )
+            with ai_interaction_scope(
+                tenant_id=request.tenant_id,
+                agent_id=selection.usage_agent_id,
+                session_id=str(request.session_id),
+                source="session_compaction",
+            ):
+                return await self._compact_with_model(
+                    request,
+                    model=selection.primary,
+                    usage_agent_id=selection.usage_agent_id,
+                )
         except (SessionContextCompactorError, ModelCapabilityError):
             raise
         except PlatformModelConfigurationError as exc:

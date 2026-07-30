@@ -10,8 +10,9 @@ registry and it does not perform provider health checks.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any, Mapping
+from typing import Any
 
 WRITE_FILE_MAX_CONTENT_CHARS = 6_000
 
@@ -3657,6 +3658,54 @@ _GROUP_BUILTIN_TOOL_SOURCE = [
         "config": {},
         "config_schema": {},
     },
+    {
+        "name": "group_workflow_read",
+        "display_name": "Read Group Workflow",
+        "description": "Read the current group's evidence-driven workflow, active stage, assigned items, blockers, and pending group-leader action.",
+        "category": "group", "icon": "🧭", "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "config": {}, "config_schema": {},
+    },
+    {
+        "name": "group_workflow_start_item",
+        "display_name": "Start Workflow Item",
+        "description": "Mark your assigned current-group workflow item as in progress.",
+        "category": "group", "icon": "▶️", "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {"item_id": {"type": "string", "format": "uuid"}, "expected_version": {"type": "integer", "minimum": 1}}, "required": ["item_id"], "additionalProperties": False},
+        "config": {}, "config_schema": {},
+    },
+    {
+        "name": "group_workflow_submit_evidence",
+        "display_name": "Submit Workflow Evidence",
+        "description": "Complete your assigned workflow item with concrete, publicly reviewable evidence such as a workspace path, link, test result, or decision record.",
+        "category": "group", "icon": "✅", "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {"item_id": {"type": "string", "format": "uuid"}, "evidence": {"type": "object", "minProperties": 1}, "expected_version": {"type": "integer", "minimum": 1}}, "required": ["item_id", "evidence"], "additionalProperties": False},
+        "config": {}, "config_schema": {},
+    },
+    {
+        "name": "group_workflow_block_item",
+        "display_name": "Block Workflow Item",
+        "description": "Record a concrete blocker for your assigned workflow item so the group leader can resolve or redistribute it.",
+        "category": "group", "icon": "⛔", "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {"item_id": {"type": "string", "format": "uuid"}, "reason": {"type": "string", "minLength": 1}, "expected_version": {"type": "integer", "minimum": 1}}, "required": ["item_id", "reason"], "additionalProperties": False},
+        "config": {}, "config_schema": {},
+    },
+    {
+        "name": "group_workflow_unblock_item",
+        "display_name": "Unblock Workflow Item",
+        "description": "Resume your previously blocked workflow item after its blocker is resolved.",
+        "category": "group", "icon": "↩️", "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {"item_id": {"type": "string", "format": "uuid"}, "expected_version": {"type": "integer", "minimum": 1}}, "required": ["item_id"], "additionalProperties": False},
+        "config": {}, "config_schema": {},
+    },
+    {
+        "name": "group_workflow_request_approval",
+        "display_name": "Request Workflow Approval",
+        "description": "Submit final evidence for your assigned approval-gated item and request the human group manager's confirmation.",
+        "category": "group", "icon": "🙋", "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {"item_id": {"type": "string", "format": "uuid"}, "evidence": {"type": "object", "minProperties": 1}, "expected_version": {"type": "integer", "minimum": 1}}, "required": ["item_id", "evidence"], "additionalProperties": False},
+        "config": {}, "config_schema": {},
+    },
 ]
 
 
@@ -3725,6 +3774,7 @@ _READ_TOOL_NAMES = frozenset(
         "group_query_members",
         "group_read_announcement",
         "group_read_memory",
+        "group_workflow_read",
         "group_list_workspace",
         "group_read_workspace_file",
     }
@@ -3760,6 +3810,11 @@ _LOCAL_WRITE_TOOL_NAMES = frozenset(
         "group_write_memory",
         "group_write_workspace_file",
         "group_delete_workspace_file",
+        "group_workflow_start_item",
+        "group_workflow_submit_evidence",
+        "group_workflow_block_item",
+        "group_workflow_unblock_item",
+        "group_workflow_request_approval",
     }
 )
 
@@ -4050,9 +4105,9 @@ __all__ = [
     "GROUP_BUILTIN_TOOL_DEFINITIONS",
     "GROUP_RUNTIME_TOOL_DEFINITIONS",
     "WRITE_FILE_MAX_CONTENT_CHARS",
+    "builtin_cross_space_action",
     "builtin_model_definition",
     "builtin_model_definitions",
-    "builtin_cross_space_action",
     "builtin_policy",
     "builtin_sensitive_paths",
     "is_reserved_custom_tool_name",

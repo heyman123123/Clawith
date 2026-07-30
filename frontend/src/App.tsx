@@ -23,6 +23,7 @@ const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
 const SSOEntry = lazy(() => import('./pages/SSOEntry'));
 const OKR = lazy(() => import('./pages/OKR'));
 const GroupsPage = lazy(() => import('./pages/groups/GroupsPage'));
+const TeamBuilderPage = lazy(() => import('./pages/TeamBuilderPage'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const token = useAuthStore((s) => s.token);
@@ -293,6 +294,7 @@ export default function App() {
                     <Route path="groups" element={<GroupsPage />} />
                     <Route path="groups/:groupId" element={<GroupsPage />} />
                     <Route path="groups/:groupId/:sessionId" element={<GroupsPage />} />
+                    <Route path="team-builder" element={<TeamBuilderPage />} />
                     <Route path="messages" element={<Messages />} />
                     <Route path="enterprise" element={<CompanyAdminRoute><EnterpriseSettings /></CompanyAdminRoute>} />
                     <Route path="okr" element={<OKR />} />

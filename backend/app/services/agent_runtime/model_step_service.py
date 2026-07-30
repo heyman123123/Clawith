@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from copy import deepcopy
-from dataclasses import asdict, replace
 import json
 import random
 import re
-from typing import Protocol, cast
 import uuid
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
+from dataclasses import asdict, replace
+from typing import Protocol, cast
 
 from loguru import logger
 from sqlalchemy import select
@@ -19,30 +19,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import Agent
 from app.models.agent_run_command import AgentRunCommand
 from app.models.agent_tool_execution import AgentToolExecution
-from app.models.llm import LLMModel
 from app.models.group import GroupMember
+from app.models.llm import LLMModel
 from app.models.participant import Participant
 from app.services.agent_context import build_agent_context
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.context_builder import (
-    ContextBuildError,
     ContextBuilder,
+    ContextBuildError,
     RuntimeContextBuild,
 )
 from app.services.agent_runtime.group_at import (
     AT_TOOL_NAME,
     group_at_tool_definition,
 )
-from app.services.agent_runtime.group_runtime_tools import with_group_runtime_tools
 from app.services.agent_runtime.group_handoff import (
     GroupAgentHandoffError,
     preflight_group_agent_handoff,
 )
+from app.services.agent_runtime.group_runtime_tools import with_group_runtime_tools
 from app.services.agent_runtime.model_capabilities import (
     ModelCapabilityError,
     ModelCapabilityResolver,
 )
 from app.services.agent_runtime.node_executor import ModelStepResult
+from app.services.agent_runtime.run_compactor import RunCompactInputs
 from app.services.agent_runtime.state import (
     JsonObject,
     JsonValue,
@@ -50,16 +51,15 @@ from app.services.agent_runtime.state import (
     RuntimeGraphState,
     runtime_messages_as_json,
 )
-from app.services.agent_runtime.run_compactor import RunCompactInputs
+from app.services.agent_runtime.thread_visibility import (
+    model_visible_thread_messages,
+)
 from app.services.agent_runtime.tool_result_store import (
     ToolResultStore,
     ToolResultStoreError,
 )
-from app.services.agent_runtime.thread_visibility import (
-    model_visible_thread_messages,
-)
 from app.services.agent_tools import get_runtime_agent_tools_for_llm
-from app.services.vision_inject import compress_bytes_to_base64
+from app.services.ai_monitoring import ai_interaction_scope
 from app.services.llm.client import LLMMessage
 from app.services.llm.failover import FailoverErrorType, classify_error
 from app.services.llm.finish import (
@@ -68,6 +68,7 @@ from app.services.llm.finish import (
     parse_legacy_finish_content,
     parse_tool_arguments,
 )
+from app.services.llm.model_resolution import active_agent_model_candidates
 from app.services.llm.multimodal_content import (
     MultimodalContentError,
     estimate_multimodal_tokens,
@@ -75,9 +76,8 @@ from app.services.llm.multimodal_content import (
     parse_multimodal_content,
 )
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
-from app.services.llm.model_resolution import active_agent_model_candidates
 from app.services.llm.utils import get_max_tokens
-
+from app.services.vision_inject import compress_bytes_to_base64
 
 _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
 _LEDGER_METADATA_KEY = "__clawith_tool_execution__"
@@ -1444,14 +1444,23 @@ class RuntimeModelStepService:
         agent: Agent,
         messages: list[LLMMessage],
         tools: list[dict],
+        session_id: str | None,
+        run_id: str,
     ) -> LLMCompletionStep:
-        return await self._completion(
-            model,
-            messages,
-            tools=tools,
+        with ai_interaction_scope(
+            tenant_id=agent.tenant_id,
             agent_id=agent.id,
-            supports_vision=bool(model.supports_vision),
-        )
+            session_id=session_id,
+            run_id=run_id,
+            source="runtime_model_step",
+        ):
+            return await self._completion(
+                model,
+                messages,
+                tools=tools,
+                agent_id=agent.id,
+                supports_vision=bool(model.supports_vision),
+            )
 
     async def _call_prepared_with_retry(
         self,
@@ -1460,6 +1469,8 @@ class RuntimeModelStepService:
         agent: Agent,
         messages: list[LLMMessage],
         tools: list[dict],
+        session_id: str | None,
+        run_id: str,
     ) -> LLMCompletionStep:
         """Retry only transient provider failures before model failover."""
         total_attempts = self._model_retry_attempts + 1
@@ -1470,6 +1481,8 @@ class RuntimeModelStepService:
                     agent=agent,
                     messages=messages,
                     tools=tools,
+                    session_id=session_id,
+                    run_id=run_id,
                 )
             except Exception as exc:
                 classification = classify_error(exc)
@@ -1603,6 +1616,8 @@ class RuntimeModelStepService:
                     agent=agent,
                     messages=prepared,
                     tools=tools,
+                    session_id=context.session_id,
+                    run_id=context.run_id,
                 )
             except Exception as primary_error:
                 primary_classification = classify_error(primary_error)
@@ -1689,6 +1704,8 @@ class RuntimeModelStepService:
                         agent=agent,
                         messages=fallback_prepared,
                         tools=fallback_tools,
+                        session_id=context.session_id,
+                        run_id=context.run_id,
                     )
                 except Exception as fallback_error:
                     fallback_classification = classify_error(fallback_error)

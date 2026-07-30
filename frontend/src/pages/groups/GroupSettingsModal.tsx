@@ -41,8 +41,9 @@ export default function GroupSettingsModal({
 
     const dirty = name.trim() !== group.name || description !== (group.description ?? '');
 
-    const people = members.filter((member) => member.participant_type === 'user');
-    const agents = members.filter((member) => member.participant_type === 'agent');
+    const leader = members.find((member) => member.participant_id === group.leader_participant_id);
+    const people = members.filter((member) => member.participant_type === 'user' && member !== leader);
+    const agents = members.filter((member) => member.participant_type === 'agent' && member !== leader);
 
     const saveProfile = async () => {
         if (!name.trim() || saving) return;
@@ -83,6 +84,9 @@ export default function GroupSettingsModal({
                     {member.display_name}
                     {member.role === 'manager' && (
                         <span className="group-badge-manager">{t('groups.manager', '群管理')}</span>
+                    )}
+                    {member.participant_id === group.leader_participant_id && (
+                        <span className="group-badge-leader">{t('groups.teamBuilderLeader', '群主')}</span>
                     )}
                     {member.is_deleted && (
                         <span className="group-badge-deleted">{t('groups.deletedBadge', '已删除')}</span>
@@ -168,6 +172,14 @@ export default function GroupSettingsModal({
                                 {t('groups.inviteTitle', '邀请成员')}
                             </button>
                         </div>
+
+                        {leader && <>
+                            <div className="group-panel-label">
+                                <IconRobot size={12} stroke={1.7} />
+                                {t('groups.teamBuilderLeader', '群主')}
+                            </div>
+                            {renderMember(leader)}
+                        </>}
 
                         {agents.length > 0 && (
                             <>

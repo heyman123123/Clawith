@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-import uuid
 
 from loguru import logger
 from sqlalchemy import select
@@ -62,6 +62,31 @@ async def publish_group_message_created(
         # The durable cursor backfill is authoritative. A transient push outage
         # must not turn an already-committed message into an HTTP/Runtime failure.
         logger.warning(f"[GroupRealtime] message.created publish failed: {exc}")
+        return False
+    return True
+
+
+async def publish_group_workflow_changed(
+    *,
+    group_id: uuid.UUID,
+    workflow_id: uuid.UUID,
+    version: int,
+) -> bool:
+    """Broadcast an invalidation hint after a committed workflow mutation."""
+    from app.api.websocket import manager
+
+    try:
+        await manager.send_message(
+            group_connection_key(group_id),
+            {
+                "type": "workflow.changed",
+                "group_id": str(group_id),
+                "workflow_id": str(workflow_id),
+                "version": version,
+            },
+        )
+    except Exception as exc:
+        logger.warning(f"[GroupRealtime] workflow.changed publish failed: {exc}")
         return False
     return True
 
@@ -125,5 +150,6 @@ __all__ = [
     "group_connection_key",
     "group_message_payload",
     "publish_group_message_created",
+    "publish_group_workflow_changed",
     "publish_stored_group_message",
 ]

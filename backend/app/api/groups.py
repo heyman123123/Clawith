@@ -52,6 +52,7 @@ class CreateGroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = None
     member_participant_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+    leader_participant_id: uuid.UUID | None = None
 
 
 class PatchGroupIn(BaseModel):
@@ -67,6 +68,7 @@ class GroupOut(BaseModel):
     name: str
     description: str | None = None
     created_by_participant_id: uuid.UUID
+    leader_participant_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -516,27 +518,35 @@ async def create_group(
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
     try:
+        create_kwargs = {
+            "tenant_id": tenant_id,
+            "creator_participant_id": participant.id,
+            "name": body.name,
+            "description": body.description,
+            "member_participant_ids": body.member_participant_ids,
+        }
+        if body.leader_participant_id is not None:
+            create_kwargs["leader_participant_id"] = body.leader_participant_id
         group = await group_chat_service.create_group(
             db,
-            tenant_id=tenant_id,
-            creator_participant_id=participant.id,
-            name=body.name,
-            description=body.description,
-            member_participant_ids=body.member_participant_ids,
+            **create_kwargs,
         )
     except GroupChatServiceError as exc:
         raise _translate_domain_error(exc) from exc
+    audit_details = {
+        "member_participant_ids": [
+            str(participant_id) for participant_id in body.member_participant_ids
+        ]
+    }
+    if body.leader_participant_id is not None:
+        audit_details["leader_participant_id"] = str(body.leader_participant_id)
     _stage_audit(
         db,
         current_user=current_user,
         action="group:create",
         tenant_id=tenant_id,
         group_id=group.id,
-        details={
-            "member_participant_ids": [
-                str(participant_id) for participant_id in body.member_participant_ids
-            ]
-        },
+        details=audit_details,
     )
     return group
 

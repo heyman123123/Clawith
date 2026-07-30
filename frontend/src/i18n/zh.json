@@ -41,7 +41,8 @@
     "language": "语言",
     "plaza": "经验广场",
     "okr": "OKR",
-    "groups": "群聊"
+    "groups": "群聊",
+    "teamBuilder": "智能搭建团队"
   },
   "talentMarket": {
     "title": "人才市场",
@@ -201,7 +202,35 @@
     "globalActivity": "全局活动",
     "recentCount": "最近 {{count}} 条",
     "noAgents": "还没有数字员工，创建你的第一个吧",
-    "createFirst": "创建第一个数字员工"
+    "createFirst": "创建第一个数字员工",
+    "aiMonitoring": {
+      "title": "AI 监控中心",
+      "retention": "仅管理员可见 · 脱敏上下文保留 30 天",
+      "calls24h": "24 小时调用",
+      "tokens24h": "24 小时 Token",
+      "errors24h": "24 小时错误",
+      "recentCalls": "最近调用",
+      "agent": "智能体",
+      "platform": "平台服务",
+      "model": "模型",
+      "tokens": "Token",
+      "duration": "耗时",
+      "status": "状态",
+      "success": "成功",
+      "error": "错误",
+      "estimated": "估算",
+      "empty": "暂未记录 AI 调用",
+      "loadFailed": "加载 AI 监控数据失败",
+      "details": "调用详情",
+      "context": "脱敏上下文",
+      "response": "输出",
+      "errorDetails": "错误详情"
+      ,"startedAt": "调用开始"
+      ,"finishedAt": "调用结束"
+      ,"records": "共 {{count}} 条"
+      ,"previousPage": "上一页"
+      ,"nextPage": "下一页"
+    }
   },
   "agent": {
     "status": {
@@ -2277,6 +2306,14 @@
     "polling": "轮询中",
     "offline": "连接断开",
     "announcement": "群公告",
+    "workflow": "推进",
+    "workflowManage": "管理工作流",
+    "workflowLoading": "正在载入推进指挥台…",
+    "workflowRetry": "重试",
+    "workflowPaused": "流程已暂停",
+    "workflowApproval": "等待确认",
+    "aiMonitoring": "AI 监控",
+    "aiMonitoringNote": "仅显示本群会话触发的 AI 调用 · 脱敏上下文",
     "announcementNote": "群公告会注入被 @ 智能体的上下文，用于约定群目标和协作规则。",
     "announcementPlaceholder": "写下群目标、协作规则和对智能体的要求...",
     "workspace": "文件",
@@ -2308,7 +2345,54 @@
     "memberCount": "{{count}} 位成员",
     "showPanel": "展开面板",
     "hidePanel": "收起面板",
-    "dragToResize": "拖动调整宽度"
+    "dragToResize": "拖动调整宽度",
+    "teamBuilderEntry": "智能搭建团队",
+    "teamBuilderPageTitle": "组建一个能落地执行的团队",
+    "teamBuilderPageLead": "先确认角色与群主，再由系统创建团队、激活群主，并在群聊中开始协作。",
+    "teamBuilderCompletedCount": "已创建团队",
+    "teamBuilderHistoryTitle": "我的团队",
+    "teamBuilderHistoryHint": "已完成的团队可直接进入对应群聊。",
+    "teamBuilderHistoryEmpty": "还没有搭建记录。创建第一个协作团队吧。",
+    "teamBuilderHistoryFailed": "无法读取团队列表",
+    "teamBuilderOpenGroup": "进入群聊",
+    "teamBuilderTitle": "智能搭建团队",
+    "teamBuilderFormHint": "描述目标，系统会先生成可确认的群主和成员方案。",
+    "teamBuilderName": "团队名称（可选）",
+    "teamBuilderRequirement": "需求",
+    "teamBuilderRequirementPlaceholder": "例如：为下月新品发布建立一个可公开协作的团队，完成调研、方案和交付物。",
+    "teamBuilderGenerate": "生成方案",
+    "teamBuilderReviewTitle": "确认团队方案",
+    "teamBuilderReviewHint": "确认后才会创建缺失的智能体和群聊。群主将接收你的首条指令并公开分发任务。",
+    "teamBuilderEditablePlan": "方案（可编辑）",
+    "teamBuilderLeader": "群主",
+    "teamBuilderConfirm": "确认并创建",
+    "teamBuilderProgressTitle": "正在搭建团队",
+    "teamBuilderProgressHint": "正在创建缺失智能体、建立群聊并以你的身份激活群主。",
+    "teamBuilderRestoreFailed": "无法恢复搭建进度",
+    "teamBuilderProgressFailed": "无法读取创建进度",
+    "teamBuilderPlanFailed": "方案生成失败，请稍后重试",
+    "teamBuilderPlanJsonInvalid": "方案格式无效，请检查后重试",
+    "teamBuilderConfirmFailed": "确认方案失败",
+    "teamBuilderRetrying": "系统会安全地继续重试此任务。你可以关闭窗口，进度会被保留。",
+    "teamBuilderStatus": {
+      "queued": "已排队",
+      "validating": "正在校验方案",
+      "provisioning_agents": "正在准备智能体",
+      "waiting_for_agents": "正在等待智能体就绪",
+      "creating_group": "正在创建群聊",
+      "activating": "正在激活群主",
+      "completed": "已完成",
+      "retryable_failed": "正在等待重试",
+      "failed": "创建失败"
+    },
+    "teamBuilderSource": {
+      "existing": "复用现有",
+      "new": "新建"
+    },
+    "teamLeaderDisplay": "群主：{{name}}",
+    "setTeamLeader": "设为群主",
+    "selectLeaderHint": "请选择一名智能体作为群主",
+    "selectedWithLeader": "已选 {{count}} 位，已指定群主"
   },
   "experience": {
     "title": "经验库",

@@ -7,7 +7,7 @@ import type { GroupMemberCandidate, ParticipantType } from '../../types/group';
 
 interface CreateGroupModalProps {
     creating: boolean;
-    onCreate: (name: string, memberParticipantIds: string[]) => void;
+    onCreate: (name: string, memberParticipantIds: string[], leaderParticipantId: string) => void;
     onCancel: () => void;
 }
 
@@ -17,6 +17,7 @@ export default function CreateGroupModal({ creating, onCreate, onCancel }: Creat
     const [tab, setTab] = useState<ParticipantType>('agent');
     const [search, setSearch] = useState('');
     const [selected, setSelected] = useState<GroupMemberCandidate[]>([]);
+    const [leaderParticipantId, setLeaderParticipantId] = useState<string | null>(null);
     const nameRef = useRef<HTMLInputElement>(null);
 
     const { data: backendCandidates = [], isLoading } = useQuery({
@@ -44,12 +45,13 @@ export default function CreateGroupModal({ creating, onCreate, onCancel }: Creat
                 ? previous.filter((item) => item.participant_id !== candidate.participant_id)
                 : [...previous, candidate],
         );
+        if (candidate.participant_id === leaderParticipantId) setLeaderParticipantId(null);
     };
 
-    const canConfirm = Boolean(name.trim()) && !creating;
+    const canConfirm = Boolean(name.trim() && leaderParticipantId) && !creating;
     const confirm = () => {
-        if (!canConfirm) return;
-        onCreate(name.trim(), selected.map((candidate) => candidate.participant_id));
+        if (!canConfirm || !leaderParticipantId) return;
+        onCreate(name.trim(), selected.map((candidate) => candidate.participant_id), leaderParticipantId);
     };
 
     return (
@@ -137,6 +139,20 @@ export default function CreateGroupModal({ creating, onCreate, onCancel }: Creat
                                 <span className={`group-check ${picked ? 'on' : ''}`}>
                                     {picked && <IconCheck size={12} stroke={2.4} />}
                                 </span>
+                                {candidate.participant_type === 'agent' && picked && (
+                                    <button
+                                        type="button"
+                                        className={`group-leader-choice ${leaderParticipantId === candidate.participant_id ? 'active' : ''}`}
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            setLeaderParticipantId(candidate.participant_id);
+                                        }}
+                                    >
+                                        {leaderParticipantId === candidate.participant_id
+                                            ? t('groups.teamBuilderLeader', '群主')
+                                            : t('groups.setTeamLeader', '设为群主')}
+                                    </button>
+                                )}
                             </div>
                         );
                     })}
@@ -144,7 +160,9 @@ export default function CreateGroupModal({ creating, onCreate, onCancel }: Creat
 
                 <div className="group-create-footer">
                     <span className="group-create-count">
-                        {t('groups.selectedCount', '已选 {{count}} 位', { count: selected.length })}
+                        {leaderParticipantId
+                            ? t('groups.selectedWithLeader', '已选 {{count}} 位，已指定群主', { count: selected.length })
+                            : t('groups.selectLeaderHint', '请选择一名智能体作为群主')}
                     </span>
                     <div className="group-create-actions">
                         <button type="button" className="btn btn-sm" onClick={onCancel}>

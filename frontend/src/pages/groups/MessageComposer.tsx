@@ -14,6 +14,8 @@ import {
 
 interface MessageComposerProps {
     members: GroupMember[];
+    /** New team groups route natural messages to this agent unless the user removes the mention. */
+    defaultLeaderParticipantId?: string | null;
     disabled?: boolean;
     canCancel?: boolean;
     cancelling?: boolean;
@@ -39,6 +41,7 @@ function findMentionQuery(value: string, caret: number): MentionQuery | null {
 
 export default function MessageComposer({
     members,
+    defaultLeaderParticipantId,
     disabled,
     canCancel = false,
     cancelling = false,
@@ -59,14 +62,47 @@ export default function MessageComposer({
      * The backend never resolves a participant from display text, so hand-typed names stay plain.
      */
     const [mentionBindings, setMentionBindings] = useState<MentionBinding[]>([]);
+    const initializedLeaderRef = useRef<string | null>(null);
+
+    // A leader group starts with a real mention binding, not merely visible `@name` text. The user
+    // can delete it or add contributors normally; switching groups clears any old-group draft and
+    // initializes exactly once again, so an old leader can never receive a new group's message.
+    useEffect(() => {
+        if (!defaultLeaderParticipantId) {
+            if (initializedLeaderRef.current !== null) {
+                setValue('');
+                setMentionBindings([]);
+                setQuery(null);
+            }
+            initializedLeaderRef.current = null;
+            return;
+        }
+        if (initializedLeaderRef.current === defaultLeaderParticipantId) return;
+        const leader = members.find((member) => (
+            member.participant_id === defaultLeaderParticipantId && member.participant_type === 'agent'
+        ));
+        if (!leader) return;
+        initializedLeaderRef.current = defaultLeaderParticipantId;
+        const token = `@${leader.display_name}`;
+        setValue(`${token} `);
+        setMentionBindings([{
+            participantId: leader.participant_id,
+            participantType: leader.participant_type,
+            start: 0,
+            end: token.length,
+            text: token,
+        }]);
+        setQuery(null);
+    }, [defaultLeaderParticipantId, members]);
 
     const candidates = useMemo(() => {
         if (!query) return [];
         const needle = query.text.toLowerCase();
         return members
             .filter((member) => member.display_name.toLowerCase().includes(needle))
+            .sort((left, right) => Number(right.participant_id === defaultLeaderParticipantId) - Number(left.participant_id === defaultLeaderParticipantId))
             .slice(0, 8);
-    }, [members, query]);
+    }, [defaultLeaderParticipantId, members, query]);
 
     useEffect(() => setHighlighted(0), [query?.text]);
 

@@ -27,6 +27,7 @@ from app.models.experience_reference import ExperienceReference
 from app.models.org import OrgMember
 from app.models.system_settings import SystemSetting
 from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
+from app.services.ai_monitoring import ai_interaction_scope
 from app.services.llm.model_resolution import resolve_active_agent_model
 
 # Agents echo this marker in their final answer to cite an entry they actually used.
@@ -208,11 +209,20 @@ async def _expand_query(db, agent, keyword: str) -> list[str]:
         if model:
             from app.services.llm import get_model_api_key
             from app.services.llm.client import chat_complete
-            resp = await chat_complete(
-                provider=model.provider, api_key=get_model_api_key(model), model=model.model, base_url=model.base_url,
-                messages=[{"role": "system", "content": _EXPANSION_SYS_PROMPT + keyword}],
-                temperature=0.0, max_tokens=120,
-            )
+            with ai_interaction_scope(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                llm_model_id=model.id,
+                source="experience_query_expansion",
+            ):
+                resp = await chat_complete(
+                    provider=model.provider,
+                    api_key=get_model_api_key(model),
+                    model=model.model,
+                    base_url=model.base_url,
+                    messages=[{"role": "system", "content": _EXPANSION_SYS_PROMPT + keyword}],
+                    temperature=0.0, max_tokens=120,
+                )
             text = resp["choices"][0]["message"].get("content") or ""
             seen = set()
             for t in re.split(r"[,，、\n]+", text):

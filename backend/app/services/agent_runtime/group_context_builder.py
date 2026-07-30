@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
+from app.models.group_workflow import (
+    GroupWorkflow,
+    GroupWorkflowEvent,
+    GroupWorkflowItem,
+    GroupWorkflowStage,
+)
 from app.models.org import OrgMember
 from app.models.participant import Participant
 from app.models.user import User
@@ -21,7 +27,6 @@ from app.services.agent_runtime.context_builder import ContextBuildError
 from app.services.agent_runtime.state import JsonObject
 from app.services.group_chat_service import GroupChatServiceError
 from app.services.group_file_service import GroupFileServiceError
-
 
 _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
 
@@ -325,6 +330,54 @@ class GroupContextBuilder:
         if isinstance(raw_responsibility, str) and raw_responsibility.strip():
             planning_hint["current_responsibility"] = raw_responsibility.strip()
 
+        workflow = await db.scalar(
+            select(GroupWorkflow).where(GroupWorkflow.group_id == group_id)
+        )
+        workflow_context: JsonObject | None = None
+        if workflow is not None:
+            stages = list((await db.execute(
+                select(GroupWorkflowStage)
+                .where(GroupWorkflowStage.workflow_id == workflow.id)
+                .order_by(GroupWorkflowStage.position)
+            )).scalars().all())
+            assigned_items = list((await db.execute(
+                select(GroupWorkflowItem).where(
+                    GroupWorkflowItem.workflow_id == workflow.id,
+                    GroupWorkflowItem.assignee_participant_id == target_participant_id,
+                    GroupWorkflowItem.status.in_(("pending", "in_progress", "blocked", "awaiting_approval")),
+                ).order_by(GroupWorkflowItem.updated_at.desc())
+            )).scalars().all())
+            leader_action = await db.scalar(select(GroupWorkflowEvent).where(
+                GroupWorkflowEvent.workflow_id == workflow.id,
+                GroupWorkflowEvent.event_type == "leader_action",
+                GroupWorkflowEvent.dispatch_state.in_(("pending", "claimed")),
+            ).order_by(GroupWorkflowEvent.created_at.desc()).limit(1))
+            workflow_context = {
+                "workflow_id": str(workflow.id),
+                "status": workflow.status,
+                "current_stage_id": str(workflow.current_stage_id) if workflow.current_stage_id else None,
+                "stages": [
+                    {"id": str(stage.id), "title": stage.title, "status": stage.status,
+                     "requires_approval": stage.requires_approval}
+                    for stage in stages
+                ],
+                "assigned_items": [
+                    {"id": str(item.id), "title": item.title, "status": item.status,
+                     "blocked_reason": item.blocked_reason, "version": item.version}
+                    for item in assigned_items
+                ],
+                "leader_next_action": (
+                    {"kind": leader_action.payload.get("kind"), "stage_id": str(leader_action.stage_id) if leader_action.stage_id else None,
+                     "item_id": str(leader_action.item_id) if leader_action.item_id else None}
+                    if leader_action else None
+                ),
+                "instruction": (
+                    "As group leader, publicly distribute the next actionable work and resolve blockers; do not wait for time-based polling."
+                    if group.leader_participant_id == target_participant_id
+                    else "Use structured workflow tools to record work, evidence, and blockers."
+                ),
+            }
+
         group_context: JsonObject = {
             "trigger": {
                 "message_id": str(trigger_message.id),
@@ -375,6 +428,7 @@ class GroupContextBuilder:
                 >= self._settings.GROUP_CONTEXT_WORKSPACE_MAX_ENTRIES
             ),
             "planning_hint": planning_hint,
+            "workflow": workflow_context,
         }
         captured_input = deepcopy(dict(initial_input))
         captured_input["group_context"] = group_context

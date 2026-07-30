@@ -6,6 +6,8 @@ export interface Group {
     name: string;
     description: string | null;
     created_by_participant_id: string;
+    /** The orchestration agent for this group, when one is assigned. */
+    leader_participant_id: string | null;
     created_at: string;
     updated_at: string;
 }

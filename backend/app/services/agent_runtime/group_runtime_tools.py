@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from copy import deepcopy
 import fnmatch
 import hashlib
 import json
-from pathlib import Path
 import re
 import uuid
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
+from pathlib import Path
 
 from sqlalchemy import select
 
 from app.models.agent import Agent
 from app.models.group import GroupMember
+from app.models.group_workflow import GroupWorkflow, GroupWorkflowEvent, GroupWorkflowItem, GroupWorkflowStage
 from app.models.org import OrgMember
 from app.models.participant import Participant
 from app.models.user import User
 from app.services import group_chat_service, group_file_service
-from app.services.agent_tools import _read_file_binary_error, read_document_bytes
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.state import RuntimeContext, RuntimeGraphState
 from app.services.agent_runtime.tool_execution import (
@@ -28,8 +28,9 @@ from app.services.agent_runtime.tool_execution import (
     ToolExecutionReconciliationPending,
     assert_tool_execution_fence,
 )
+from app.services.agent_tools import _read_file_binary_error, read_document_bytes
 from app.services.builtin_tool_definitions import GROUP_RUNTIME_TOOL_DEFINITIONS
-
+from app.services.group_workflow import service as group_workflow_service
 
 _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
 GROUP_QUERY_MEMBERS = "group_query_members"
@@ -40,15 +41,29 @@ GROUP_LIST_WORKSPACE = "group_list_workspace"
 GROUP_READ_WORKSPACE_FILE = "group_read_workspace_file"
 GROUP_WRITE_WORKSPACE_FILE = "group_write_workspace_file"
 GROUP_DELETE_WORKSPACE_FILE = "group_delete_workspace_file"
+GROUP_WORKFLOW_READ = "group_workflow_read"
+GROUP_WORKFLOW_START_ITEM = "group_workflow_start_item"
+GROUP_WORKFLOW_SUBMIT_EVIDENCE = "group_workflow_submit_evidence"
+GROUP_WORKFLOW_BLOCK_ITEM = "group_workflow_block_item"
+GROUP_WORKFLOW_UNBLOCK_ITEM = "group_workflow_unblock_item"
+GROUP_WORKFLOW_REQUEST_APPROVAL = "group_workflow_request_approval"
 
 GROUP_BUSINESS_READ_TOOL_NAMES = frozenset(
     {
         GROUP_QUERY_MEMBERS,
         GROUP_READ_ANNOUNCEMENT,
         GROUP_READ_MEMORY,
+        GROUP_WORKFLOW_READ,
     }
 )
-GROUP_BUSINESS_WRITE_TOOL_NAMES = frozenset({GROUP_WRITE_MEMORY})
+GROUP_BUSINESS_WRITE_TOOL_NAMES = frozenset({
+    GROUP_WRITE_MEMORY,
+    GROUP_WORKFLOW_START_ITEM,
+    GROUP_WORKFLOW_SUBMIT_EVIDENCE,
+    GROUP_WORKFLOW_BLOCK_ITEM,
+    GROUP_WORKFLOW_UNBLOCK_ITEM,
+    GROUP_WORKFLOW_REQUEST_APPROVAL,
+})
 GROUP_BUSINESS_TOOL_NAMES = (
     GROUP_BUSINESS_READ_TOOL_NAMES | GROUP_BUSINESS_WRITE_TOOL_NAMES
 )
@@ -538,6 +553,44 @@ async def _query_members(
     return output
 
 
+def _optional_positive_int(arguments: Mapping[str, object], field: str) -> int | None:
+    value = arguments.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise GroupRuntimeToolError("group_tool_arguments_invalid", f"{field} must be a positive integer")
+    return value
+
+
+async def _workflow_read(db, *, group_id: uuid.UUID) -> dict:
+    workflow = await db.scalar(select(GroupWorkflow).where(GroupWorkflow.group_id == group_id))
+    if workflow is None:
+        return {"workflow": None, "leader_next_action": None}
+    stages = list((await db.execute(
+        select(GroupWorkflowStage).where(GroupWorkflowStage.workflow_id == workflow.id).order_by(GroupWorkflowStage.position)
+    )).scalars().all())
+    items = list((await db.execute(
+        select(GroupWorkflowItem).where(GroupWorkflowItem.workflow_id == workflow.id).order_by(GroupWorkflowItem.created_at)
+    )).scalars().all())
+    action = await db.scalar(select(GroupWorkflowEvent).where(
+        GroupWorkflowEvent.workflow_id == workflow.id,
+        GroupWorkflowEvent.event_type == "leader_action",
+        GroupWorkflowEvent.dispatch_state.in_(("pending", "claimed")),
+    ).order_by(GroupWorkflowEvent.created_at.desc()).limit(1))
+    return {
+        "workflow": {
+            "id": str(workflow.id), "name": workflow.name, "status": workflow.status,
+            "version": workflow.version, "current_stage_id": str(workflow.current_stage_id) if workflow.current_stage_id else None,
+            "stages": [{"id": str(stage.id), "title": stage.title, "status": stage.status, "requires_approval": stage.requires_approval} for stage in stages],
+            "items": [{"id": str(item.id), "stage_id": str(item.stage_id), "title": item.title, "status": item.status,
+                       "assignee_participant_id": str(item.assignee_participant_id) if item.assignee_participant_id else None,
+                       "blocked_reason": item.blocked_reason, "evidence": item.evidence, "version": item.version} for item in items],
+        },
+        "leader_next_action": ({"kind": action.payload.get("kind"), "stage_id": str(action.stage_id) if action.stage_id else None,
+                                "item_id": str(action.item_id) if action.item_id else None} if action else None),
+    }
+
+
 class GroupRuntimeToolService:
     """Execute group tools with scope read only from the immutable checkpoint."""
 
@@ -581,104 +634,103 @@ class GroupRuntimeToolService:
         lease_owner: str,
     ) -> ToolExecutionOutcome:
         try:
-            async with self._session_factory() as db:
-                async with db.begin():
-                    await self._assert_workspace_fence(
+            async with self._session_factory() as db, db.begin():
+                await self._assert_workspace_fence(
+                    db,
+                    tenant_id=tenant_id,
+                    operation_id=operation_id,
+                    lease_owner=lease_owner,
+                )
+                path = _group_workspace_path(
+                    arguments,
+                    "path",
+                    required=True,
+                )
+                expected_version_token = _optional_string(
+                    arguments,
+                    "expected_version_token",
+                )
+                if tool_name == "edit_file":
+                    current = await group_file_service.read_workspace_file(
                         db,
                         tenant_id=tenant_id,
-                        operation_id=operation_id,
-                        lease_owner=lease_owner,
+                        group_id=group_id,
+                        actor_participant_id=participant_id,
+                        path=path,
                     )
-                    path = _group_workspace_path(
+                    old_string = _string_argument(
                         arguments,
-                        "path",
+                        "old_string",
                         required=True,
                     )
-                    expected_version_token = _optional_string(
+                    new_string = _string_argument(
                         arguments,
-                        "expected_version_token",
+                        "new_string",
+                        required=False,
                     )
-                    if tool_name == "edit_file":
-                        current = await group_file_service.read_workspace_file(
+                    occurrences = current.content.count(old_string)
+                    replace_all = bool(arguments.get("replace_all", False))
+                    if occurrences == 0:
+                        raise GroupRuntimeToolError(
+                            "workspace_edit_text_not_found",
+                            f"old_string was not found in {path}",
+                        )
+                    if occurrences > 1 and not replace_all:
+                        raise GroupRuntimeToolError(
+                            "workspace_edit_text_ambiguous",
+                            (
+                                f"old_string appears {occurrences} times in {path}; "
+                                "provide a unique match or set replace_all"
+                            ),
+                        )
+                    content = (
+                        current.content.replace(old_string, new_string)
+                        if replace_all
+                        else current.content.replace(old_string, new_string, 1)
+                    )
+                    expected_version_token = current.version_token
+                elif tool_name in {
+                    GROUP_WRITE_WORKSPACE_FILE,
+                    "write_file",
+                }:
+                    content = _string_argument(
+                        arguments,
+                        "content",
+                        required=True,
+                    )
+                else:
+                    content = None
+                if tool_name in {
+                    GROUP_WRITE_WORKSPACE_FILE,
+                    "write_file",
+                    "edit_file",
+                }:
+                    prepared = (
+                        await group_file_service.prepare_runtime_workspace_write(
                             db,
                             tenant_id=tenant_id,
                             group_id=group_id,
                             actor_participant_id=participant_id,
+                            operation_id=operation_id,
                             path=path,
+                            content=content,
+                            expected_version_token=expected_version_token,
+                            session_id=session_id,
                         )
-                        old_string = _string_argument(
-                            arguments,
-                            "old_string",
-                            required=True,
+                    )
+                else:
+                    prepared = (
+                        await group_file_service.prepare_runtime_workspace_delete(
+                            db,
+                            tenant_id=tenant_id,
+                            group_id=group_id,
+                            actor_participant_id=participant_id,
+                            operation_id=operation_id,
+                            path=path,
+                            expected_version_token=expected_version_token,
+                            session_id=session_id,
                         )
-                        new_string = _string_argument(
-                            arguments,
-                            "new_string",
-                            required=False,
-                        )
-                        occurrences = current.content.count(old_string)
-                        replace_all = bool(arguments.get("replace_all", False))
-                        if occurrences == 0:
-                            raise GroupRuntimeToolError(
-                                "workspace_edit_text_not_found",
-                                f"old_string was not found in {path}",
-                            )
-                        if occurrences > 1 and not replace_all:
-                            raise GroupRuntimeToolError(
-                                "workspace_edit_text_ambiguous",
-                                (
-                                    f"old_string appears {occurrences} times in {path}; "
-                                    "provide a unique match or set replace_all"
-                                ),
-                            )
-                        content = (
-                            current.content.replace(old_string, new_string)
-                            if replace_all
-                            else current.content.replace(old_string, new_string, 1)
-                        )
-                        expected_version_token = current.version_token
-                    elif tool_name in {
-                        GROUP_WRITE_WORKSPACE_FILE,
-                        "write_file",
-                    }:
-                        content = _string_argument(
-                            arguments,
-                            "content",
-                            required=True,
-                        )
-                    else:
-                        content = None
-                    if tool_name in {
-                        GROUP_WRITE_WORKSPACE_FILE,
-                        "write_file",
-                        "edit_file",
-                    }:
-                        prepared = (
-                            await group_file_service.prepare_runtime_workspace_write(
-                                db,
-                                tenant_id=tenant_id,
-                                group_id=group_id,
-                                actor_participant_id=participant_id,
-                                operation_id=operation_id,
-                                path=path,
-                                content=content,
-                                expected_version_token=expected_version_token,
-                                session_id=session_id,
-                            )
-                        )
-                    else:
-                        prepared = (
-                            await group_file_service.prepare_runtime_workspace_delete(
-                                db,
-                                tenant_id=tenant_id,
-                                group_id=group_id,
-                                actor_participant_id=participant_id,
-                                operation_id=operation_id,
-                                path=path,
-                                expected_version_token=expected_version_token,
-                                session_id=session_id,
-                            )
-                        )
+                    )
         except (GroupRuntimeToolError, GroupWorkspaceReconciliationPending):
             raise
         except group_file_service.GroupFileServiceError as exc:
@@ -689,17 +741,16 @@ class GroupRuntimeToolService:
             ) from exc
 
         try:
-            async with self._session_factory() as db:
-                async with db.begin():
-                    await self._assert_workspace_fence(
-                        db,
-                        tenant_id=tenant_id,
-                        operation_id=operation_id,
-                        lease_owner=lease_owner,
-                    )
-                    await group_file_service.apply_runtime_workspace_operation(
-                        prepared
-                    )
+            async with self._session_factory() as db, db.begin():
+                await self._assert_workspace_fence(
+                    db,
+                    tenant_id=tenant_id,
+                    operation_id=operation_id,
+                    lease_owner=lease_owner,
+                )
+                await group_file_service.apply_runtime_workspace_operation(
+                    prepared
+                )
         except GroupWorkspaceReconciliationPending:
             raise
         except group_file_service.GroupFileServiceError as exc:
@@ -712,21 +763,20 @@ class GroupRuntimeToolService:
             ) from exc
 
         try:
-            async with self._session_factory() as db:
-                async with db.begin():
-                    await self._assert_workspace_fence(
+            async with self._session_factory() as db, db.begin():
+                await self._assert_workspace_fence(
+                    db,
+                    tenant_id=tenant_id,
+                    operation_id=operation_id,
+                    lease_owner=lease_owner,
+                )
+                receipt = (
+                    await group_file_service.reconcile_runtime_workspace_operation(
                         db,
-                        tenant_id=tenant_id,
+                        group_id=group_id,
                         operation_id=operation_id,
-                        lease_owner=lease_owner,
                     )
-                    receipt = (
-                        await group_file_service.reconcile_runtime_workspace_operation(
-                            db,
-                            group_id=group_id,
-                            operation_id=operation_id,
-                        )
-                    )
+                )
         except GroupWorkspaceReconciliationPending:
             raise
         except Exception as exc:
@@ -783,21 +833,20 @@ class GroupRuntimeToolService:
                 f"Tool {tool_name} is not a Group workspace mutation",
             )
         try:
-            async with self._session_factory() as db:
-                async with db.begin():
-                    await self._assert_workspace_fence(
+            async with self._session_factory() as db, db.begin():
+                await self._assert_workspace_fence(
+                    db,
+                    tenant_id=tenant_id,
+                    operation_id=operation_id,
+                    lease_owner=lease_owner,
+                )
+                receipt = (
+                    await group_file_service.reconcile_runtime_workspace_operation(
                         db,
-                        tenant_id=tenant_id,
+                        group_id=group_id,
                         operation_id=operation_id,
-                        lease_owner=lease_owner,
                     )
-                    receipt = (
-                        await group_file_service.reconcile_runtime_workspace_operation(
-                            db,
-                            group_id=group_id,
-                            operation_id=operation_id,
-                        )
-                    )
+                )
         except GroupWorkspaceReconciliationPending:
             raise
         except group_file_service.GroupFileServiceError as exc:
@@ -912,15 +961,14 @@ class GroupRuntimeToolService:
                     "read_document max_chars must be an integer.",
                     "invalid_tool_arguments",
                 )
-            async with self._session_factory() as db:
-                async with db.begin():
-                    value = await group_file_service.read_workspace_binary_file(
-                        db,
-                        tenant_id=tenant_id,
-                        group_id=group_id,
-                        actor_participant_id=participant_id,
-                        path=path,
-                    )
+            async with self._session_factory() as db, db.begin():
+                value = await group_file_service.read_workspace_binary_file(
+                    db,
+                    tenant_id=tenant_id,
+                    group_id=group_id,
+                    actor_participant_id=participant_id,
+                    path=path,
+                )
             document = await read_document_bytes(
                 value.content,
                 Path(path).name,
@@ -934,199 +982,198 @@ class GroupRuntimeToolService:
                 )
             return _scoped_workspace_success(document.content)
 
-        async with self._session_factory() as db:
-            async with db.begin():
-                if tool_name == "list_files":
-                    path = _group_workspace_path(
-                        arguments,
-                        "path",
-                        required=False,
-                    )
-                    entries = await group_file_service.list_workspace(
-                        db,
-                        tenant_id=tenant_id,
-                        group_id=group_id,
-                        actor_participant_id=participant_id,
-                        path=path,
-                    )
-                    directories = sum(1 for entry in entries if entry.is_dir)
-                    files = len(entries) - directories
-                    if not entries:
-                        return _scoped_workspace_success(
-                            f"📂 {path or 'workspace'}: Empty directory (0 files, 0 folders)"
-                        )
-                    lines = [
-                        (
-                            f"  📁 {entry.name}/"
-                            if entry.is_dir
-                            else f"  📄 {entry.name} ({entry.size}B)"
-                        )
-                        for entry in entries
-                    ]
+        async with self._session_factory() as db, db.begin():
+            if tool_name == "list_files":
+                path = _group_workspace_path(
+                    arguments,
+                    "path",
+                    required=False,
+                )
+                entries = await group_file_service.list_workspace(
+                    db,
+                    tenant_id=tenant_id,
+                    group_id=group_id,
+                    actor_participant_id=participant_id,
+                    path=path,
+                )
+                directories = sum(1 for entry in entries if entry.is_dir)
+                files = len(entries) - directories
+                if not entries:
                     return _scoped_workspace_success(
-                        (
-                            f"📂 {path or 'workspace'}: {directories} folder(s), "
-                            f"{files} file(s)\n"
+                        f"📂 {path or 'workspace'}: Empty directory (0 files, 0 folders)"
+                    )
+                lines = [
+                    (
+                        f"  📁 {entry.name}/"
+                        if entry.is_dir
+                        else f"  📄 {entry.name} ({entry.size}B)"
+                    )
+                    for entry in entries
+                ]
+                return _scoped_workspace_success(
+                    (
+                        f"📂 {path or 'workspace'}: {directories} folder(s), "
+                        f"{files} file(s)\n"
+                    )
+                    + "\n".join(lines)
+                )
+
+            if tool_name == "read_file":
+                path = _group_workspace_path(arguments, "path", required=True)
+                binary_error = _read_file_binary_error(path)
+                if binary_error is not None:
+                    return _scoped_workspace_failure(
+                        binary_error,
+                        "workspace_binary_file_unsupported",
+                    )
+                try:
+                    offset = int(arguments.get("offset", 0))
+                    limit = int(arguments.get("limit", 2000))
+                except (TypeError, ValueError):
+                    return _scoped_workspace_failure(
+                        "read_file offset and limit must be integers.",
+                        "invalid_tool_arguments",
+                    )
+                if offset < 0 or limit <= 0:
+                    return _scoped_workspace_failure(
+                        "read_file offset must be non-negative and limit must be positive.",
+                        "invalid_tool_arguments",
+                    )
+                value = await group_file_service.read_workspace_file(
+                    db,
+                    tenant_id=tenant_id,
+                    group_id=group_id,
+                    actor_participant_id=participant_id,
+                    path=path,
+                )
+                lines = value.content.splitlines()
+                end = min(len(lines), offset + limit)
+                if offset >= len(lines) and lines:
+                    return _scoped_workspace_failure(
+                        f"Offset {offset} exceeds file length ({len(lines)} lines total).",
+                        "workspace_read_offset_invalid",
+                    )
+                selected = "\n".join(
+                    f"{index + 1:6}\t{line}"
+                    for index, line in enumerate(lines[offset:end], start=offset)
+                )
+                if len(lines) > end:
+                    selected += (
+                        f"\n\n... [{len(lines) - end} more lines not shown, "
+                        f"lines {end + 1}-{len(lines)}]"
+                    )
+                return _scoped_workspace_success(
+                    (
+                        f"📄 {path} "
+                        f"(lines {offset + 1 if lines else 0}-{end} of {len(lines)})\n"
+                    )
+                    + selected
+                )
+
+            if tool_name in {"search_files", "find_files"}:
+                path = _group_workspace_path(
+                    arguments,
+                    "path",
+                    required=False,
+                )
+                entries = await group_file_service.index_workspace(
+                    db,
+                    tenant_id=tenant_id,
+                    group_id=group_id,
+                    actor_participant_id=participant_id,
+                    limit=1000,
+                )
+                candidates = [
+                    entry
+                    for entry in entries
+                    if not entry.is_dir
+                    and (
+                        not path
+                        or entry.path == path
+                        or entry.path.startswith(path.rstrip("/") + "/")
+                    )
+                ]
+                pattern = _string_argument(arguments, "pattern", required=True)
+                if tool_name == "find_files":
+                    matches = [
+                        entry
+                        for entry in candidates
+                        if fnmatch.fnmatch(entry.path, pattern)
+                        or fnmatch.fnmatch(entry.name, pattern)
+                    ]
+                    if not matches:
+                        return _scoped_workspace_success(
+                            f"No files matching pattern: {pattern}"
                         )
-                        + "\n".join(lines)
+                    return _scoped_workspace_success(
+                        
+                            f"📂 Found {len(matches)} file(s) matching '{pattern}':\n"
+                            + "\n".join(
+                                f"📄 {entry.path} ({entry.size}B)"
+                                for entry in matches[:100]
+                            )
+                        
                     )
 
-                if tool_name == "read_file":
-                    path = _group_workspace_path(arguments, "path", required=True)
-                    binary_error = _read_file_binary_error(path)
-                    if binary_error is not None:
-                        return _scoped_workspace_failure(
-                            binary_error,
-                            "workspace_binary_file_unsupported",
-                        )
-                    try:
-                        offset = int(arguments.get("offset", 0))
-                        limit = int(arguments.get("limit", 2000))
-                    except (TypeError, ValueError):
-                        return _scoped_workspace_failure(
-                            "read_file offset and limit must be integers.",
-                            "invalid_tool_arguments",
-                        )
-                    if offset < 0 or limit <= 0:
-                        return _scoped_workspace_failure(
-                            "read_file offset must be non-negative and limit must be positive.",
-                            "invalid_tool_arguments",
-                        )
+                try:
+                    regex = re.compile(
+                        pattern,
+                        re.IGNORECASE
+                        if bool(arguments.get("ignore_case", False))
+                        else 0,
+                    )
+                except re.error as exc:
+                    return _scoped_workspace_failure(
+                        f"Invalid regex pattern: {exc}",
+                        "invalid_tool_arguments",
+                    )
+                file_pattern = arguments.get("file_pattern", "*")
+                if not isinstance(file_pattern, str):
+                    return _scoped_workspace_failure(
+                        "search_files file_pattern must be a string.",
+                        "invalid_tool_arguments",
+                    )
+                results: list[str] = []
+                searched = 0
+                for entry in candidates:
+                    if not (
+                        fnmatch.fnmatch(entry.name, file_pattern)
+                        or fnmatch.fnmatch(entry.path, file_pattern)
+                    ):
+                        continue
+                    if _read_file_binary_error(entry.path) is not None:
+                        continue
                     value = await group_file_service.read_workspace_file(
                         db,
                         tenant_id=tenant_id,
                         group_id=group_id,
                         actor_participant_id=participant_id,
-                        path=path,
+                        path=entry.path,
                     )
-                    lines = value.content.splitlines()
-                    end = min(len(lines), offset + limit)
-                    if offset >= len(lines) and lines:
-                        return _scoped_workspace_failure(
-                            f"Offset {offset} exceeds file length ({len(lines)} lines total).",
-                            "workspace_read_offset_invalid",
-                        )
-                    selected = "\n".join(
-                        f"{index + 1:6}\t{line}"
-                        for index, line in enumerate(lines[offset:end], start=offset)
-                    )
-                    if len(lines) > end:
-                        selected += (
-                            f"\n\n... [{len(lines) - end} more lines not shown, "
-                            f"lines {end + 1}-{len(lines)}]"
-                        )
-                    return _scoped_workspace_success(
-                        (
-                            f"📄 {path} "
-                            f"(lines {offset + 1 if lines else 0}-{end} of {len(lines)})\n"
-                        )
-                        + selected
-                    )
-
-                if tool_name in {"search_files", "find_files"}:
-                    path = _group_workspace_path(
-                        arguments,
-                        "path",
-                        required=False,
-                    )
-                    entries = await group_file_service.index_workspace(
-                        db,
-                        tenant_id=tenant_id,
-                        group_id=group_id,
-                        actor_participant_id=participant_id,
-                        limit=1000,
-                    )
-                    candidates = [
-                        entry
-                        for entry in entries
-                        if not entry.is_dir
-                        and (
-                            not path
-                            or entry.path == path
-                            or entry.path.startswith(path.rstrip("/") + "/")
-                        )
-                    ]
-                    pattern = _string_argument(arguments, "pattern", required=True)
-                    if tool_name == "find_files":
-                        matches = [
-                            entry
-                            for entry in candidates
-                            if fnmatch.fnmatch(entry.path, pattern)
-                            or fnmatch.fnmatch(entry.name, pattern)
-                        ]
-                        if not matches:
-                            return _scoped_workspace_success(
-                                f"No files matching pattern: {pattern}"
+                    searched += 1
+                    for line_number, line in enumerate(
+                        value.content.splitlines(),
+                        1,
+                    ):
+                        if regex.search(line):
+                            results.append(
+                                f"{entry.path}:{line_number}: {line.strip()[:100]}"
                             )
-                        return _scoped_workspace_success(
-                            (
-                                f"📂 Found {len(matches)} file(s) matching '{pattern}':\n"
-                                + "\n".join(
-                                    f"📄 {entry.path} ({entry.size}B)"
-                                    for entry in matches[:100]
-                                )
-                            )
-                        )
-
-                    try:
-                        regex = re.compile(
-                            pattern,
-                            re.IGNORECASE
-                            if bool(arguments.get("ignore_case", False))
-                            else 0,
-                        )
-                    except re.error as exc:
-                        return _scoped_workspace_failure(
-                            f"Invalid regex pattern: {exc}",
-                            "invalid_tool_arguments",
-                        )
-                    file_pattern = arguments.get("file_pattern", "*")
-                    if not isinstance(file_pattern, str):
-                        return _scoped_workspace_failure(
-                            "search_files file_pattern must be a string.",
-                            "invalid_tool_arguments",
-                        )
-                    results: list[str] = []
-                    searched = 0
-                    for entry in candidates:
-                        if not (
-                            fnmatch.fnmatch(entry.name, file_pattern)
-                            or fnmatch.fnmatch(entry.path, file_pattern)
-                        ):
-                            continue
-                        if _read_file_binary_error(entry.path) is not None:
-                            continue
-                        value = await group_file_service.read_workspace_file(
-                            db,
-                            tenant_id=tenant_id,
-                            group_id=group_id,
-                            actor_participant_id=participant_id,
-                            path=entry.path,
-                        )
-                        searched += 1
-                        for line_number, line in enumerate(
-                            value.content.splitlines(),
-                            1,
-                        ):
-                            if regex.search(line):
-                                results.append(
-                                    f"{entry.path}:{line_number}: {line.strip()[:100]}"
-                                )
-                                if len(results) >= 50:
-                                    break
-                        if len(results) >= 50:
-                            break
-                    if not results:
-                        return _scoped_workspace_success(
-                            f"No matches found for pattern '{pattern}' in {searched} file(s)"
-                        )
+                            if len(results) >= 50:
+                                break
+                    if len(results) >= 50:
+                        break
+                if not results:
                     return _scoped_workspace_success(
-                        (
-                            f"🔍 Found {len(results)} match(es) in {searched} file(s) "
-                            f"for pattern '{pattern}':\n"
-                        )
-                        + "\n".join(results)
+                        f"No matches found for pattern '{pattern}' in {searched} file(s)"
                     )
+                return _scoped_workspace_success(
+                    (
+                        f"🔍 Found {len(results)} match(es) in {searched} file(s) "
+                        f"for pattern '{pattern}':\n"
+                    )
+                    + "\n".join(results)
+                )
 
         raise GroupRuntimeToolError(
             "group_tool_unknown",
@@ -1175,8 +1222,13 @@ class GroupRuntimeToolService:
                 operation_id=operation_id,
                 lease_owner=lease_owner,
             )
-        async with self._session_factory() as db:
-            async with db.begin():
+        async with self._session_factory() as db, db.begin():
+                await group_chat_service.authorize_group_member(
+                    db,
+                    tenant_id=tenant_id,
+                    group_id=group_id,
+                    participant_id=participant_id,
+                )
                 if tool_name == GROUP_QUERY_MEMBERS:
                     participant_type = arguments.get("participant_type")
                     if participant_type not in {None, "user", "agent"}:
@@ -1250,6 +1302,54 @@ class GroupRuntimeToolService:
                         ),
                         include_content=False,
                     )
+                elif tool_name == GROUP_WORKFLOW_READ:
+                    value = await _workflow_read(db, group_id=group_id)
+                elif tool_name in {
+                    GROUP_WORKFLOW_START_ITEM,
+                    GROUP_WORKFLOW_SUBMIT_EVIDENCE,
+                    GROUP_WORKFLOW_BLOCK_ITEM,
+                    GROUP_WORKFLOW_UNBLOCK_ITEM,
+                    GROUP_WORKFLOW_REQUEST_APPROVAL,
+                }:
+                    item_id = _uuid_argument(arguments, "item_id")
+                    expected_version = _optional_positive_int(arguments, "expected_version")
+                    scoped_item = await db.scalar(
+                        select(GroupWorkflowItem)
+                        .join(GroupWorkflow, GroupWorkflow.id == GroupWorkflowItem.workflow_id)
+                        .where(
+                            GroupWorkflowItem.id == item_id,
+                            GroupWorkflow.group_id == group_id,
+                        )
+                    )
+                    if scoped_item is None:
+                        raise GroupRuntimeToolError(
+                            "workflow_item_not_found",
+                            "Workflow item is outside the current group",
+                        )
+                    try:
+                        if tool_name == GROUP_WORKFLOW_START_ITEM:
+                            await group_workflow_service.start_item(
+                                db, item_id=item_id, actor_participant_id=participant_id, expected_version=expected_version
+                            )
+                        elif tool_name in {GROUP_WORKFLOW_SUBMIT_EVIDENCE, GROUP_WORKFLOW_REQUEST_APPROVAL}:
+                            evidence = arguments.get("evidence")
+                            if not isinstance(evidence, dict) or not evidence:
+                                raise GroupRuntimeToolError("group_tool_arguments_invalid", "evidence must be a non-empty object")
+                            await group_workflow_service.submit_evidence(
+                                db, item_id=item_id, actor_participant_id=participant_id, evidence=evidence, expected_version=expected_version
+                            )
+                        elif tool_name == GROUP_WORKFLOW_BLOCK_ITEM:
+                            await group_workflow_service.set_blocked(
+                                db, item_id=item_id, actor_participant_id=participant_id,
+                                reason=_string_argument(arguments, "reason", required=True),
+                            )
+                        else:
+                            await group_workflow_service.clear_blocked(
+                                db, item_id=item_id, actor_participant_id=participant_id, expected_version=expected_version
+                            )
+                    except group_workflow_service.GroupWorkflowServiceError as exc:
+                        raise GroupRuntimeToolError(exc.code, str(exc)) from exc
+                    value = await _workflow_read(db, group_id=group_id)
                 elif tool_name == GROUP_LIST_WORKSPACE:
                     entries = await group_file_service.list_workspace(
                         db,

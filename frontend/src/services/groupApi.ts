@@ -40,7 +40,12 @@ export const groupApi = {
 
     get: (groupId: string) => fetchJson<Group>(`/groups/${groupId}`),
 
-    create: (data: { name: string; description?: string; member_participant_ids?: string[] }) =>
+    create: (data: {
+        name: string;
+        description?: string;
+        member_participant_ids?: string[];
+        leader_participant_id?: string;
+    }) =>
         fetchJson<Group>('/groups', { method: 'POST', body: JSON.stringify(data) }),
 
     update: (groupId: string, data: { name?: string; description?: string }) =>

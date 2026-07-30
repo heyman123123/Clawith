@@ -406,6 +406,9 @@ export default function GroupsPage() {
         getLastCursor,
         onMessages: receiveMessages,
         onGroupActivity,
+        onWorkflowChanged: () => {
+            if (activeGroup?.id) void queryClient.invalidateQueries({ queryKey: ['group-workflow', activeGroup.id] });
+        },
     });
 
     const markLatestMessageSeen = useCallback((messageId: string) => {
@@ -540,13 +543,18 @@ export default function GroupsPage() {
         }
     };
 
-    const createGroup = async (name: string, memberParticipantIds: string[]) => {
+    const createGroup = async (
+        name: string,
+        memberParticipantIds: string[],
+        leaderParticipantId: string,
+    ) => {
         if (!name.trim() || creatingGroupPending) return;
         setCreatingGroupPending(true);
         try {
             const group = await groupApi.create({
                 name: name.trim(),
                 member_participant_ids: memberParticipantIds,
+                leader_participant_id: leaderParticipantId,
             });
             setCreatingGroup(false);
             await refetchGroups();
@@ -816,6 +824,12 @@ export default function GroupsPage() {
                                     {t('groups.agentCount', '{{count}} 个智能体', { count: memberCounts.agents })}
                                     {' · '}
                                     {t('groups.memberCount', '{{count}} 位成员', { count: memberCounts.people })}
+                                    {activeGroup.leader_participant_id && (() => {
+                                        const leader = members.find((member) => (
+                                            member.participant_id === activeGroup.leader_participant_id
+                                        ));
+                                        return leader ? <>{' · '}{t('groups.teamLeaderDisplay', '群主：{{name}}', { name: leader.display_name })}</> : null;
+                                    })()}
                                 </div>
                             </div>
                             <button
@@ -847,6 +861,7 @@ export default function GroupsPage() {
 
                         <MessageComposer
                             members={members}
+                            defaultLeaderParticipantId={activeGroup.leader_participant_id}
                             canCancel={activeRunIds.length > 0}
                             cancelling={cancellingRuns}
                             onCancel={() => void cancelActiveRuns()}
@@ -867,6 +882,9 @@ export default function GroupsPage() {
                     groupId={activeGroup.id}
                     groupName={activeGroup.name}
                     members={members}
+                    leaderParticipantId={activeGroup.leader_participant_id}
+                    myParticipantId={me?.participant_id}
+                    isManager={isManager}
                     onInvite={() => setShowInvite(true)}
                     onOpenSettings={() => setShowSettings(true)}
                     onClose={() => setShowPanel(false)}
@@ -901,11 +919,12 @@ export default function GroupsPage() {
             {creatingGroup && (
                 <CreateGroupModal
                     creating={creatingGroupPending}
-                    onCreate={(name, memberParticipantIds) =>
-                        void createGroup(name, memberParticipantIds)}
+                    onCreate={(name, memberParticipantIds, leaderParticipantId) =>
+                        void createGroup(name, memberParticipantIds, leaderParticipantId)}
                     onCancel={() => setCreatingGroup(false)}
                 />
             )}
+
 
             <PromptModal
                 open={Boolean(creatingSession)}

@@ -26,6 +26,8 @@ interface GroupSocketEvent {
     type: string;
     session_id?: string;
     message?: GroupMessage;
+    workflow_id?: string;
+    version?: number;
 }
 
 export interface GroupActivity {
@@ -93,6 +95,8 @@ interface UseGroupRealtimeOptions {
     onMessages: (sessionId: string, messages: GroupMessage[]) => void;
     /** A committed message arrived, or the transport reconnected and needs reconciliation. */
     onGroupActivity?: (activity: GroupActivity) => void;
+    /** A durable workflow state transition arrived for this group. */
+    onWorkflowChanged?: () => void;
     enabled?: boolean;
 }
 
@@ -102,6 +106,7 @@ export function useGroupRealtime({
     getLastCursor,
     onMessages,
     onGroupActivity,
+    onWorkflowChanged,
     enabled = true,
 }: UseGroupRealtimeOptions): { status: RealtimeStatus } {
     const [status, setStatus] = useState<RealtimeStatus>('connecting');
@@ -110,9 +115,11 @@ export function useGroupRealtime({
     const getLastCursorRef = useRef(getLastCursor);
     const onMessagesRef = useRef(onMessages);
     const onGroupActivityRef = useRef(onGroupActivity);
+    const onWorkflowChangedRef = useRef(onWorkflowChanged);
     getLastCursorRef.current = getLastCursor;
     onMessagesRef.current = onMessages;
     onGroupActivityRef.current = onGroupActivity;
+    onWorkflowChangedRef.current = onWorkflowChanged;
 
     const sessionIdRef = useRef(sessionId);
     sessionIdRef.current = sessionId;
@@ -191,6 +198,10 @@ export function useGroupRealtime({
                 try {
                     payload = JSON.parse(event.data);
                 } catch {
+                    return;
+                }
+                if (payload.type === 'workflow.changed') {
+                    onWorkflowChangedRef.current?.();
                     return;
                 }
                 if (payload.type !== 'message.created' || !payload.message || !payload.session_id) {

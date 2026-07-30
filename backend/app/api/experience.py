@@ -23,6 +23,7 @@ from app.models.agent import Agent
 from app.models.experience import ExperienceEntry
 from app.models.experience_reference import ExperienceReference
 from app.models.user import User
+from app.services.ai_monitoring import ai_interaction_scope
 from app.services.llm.model_resolution import resolve_active_agent_model
 
 router = APIRouter(prefix="/api/experience", tags=["experience"])
@@ -425,17 +426,23 @@ async def _distill_fields(db, agent, content: str) -> dict:
             from app.services.llm import get_model_api_key
             from app.services.llm.client import chat_complete
 
-            resp = await chat_complete(
-                provider=model.provider,
-                api_key=get_model_api_key(model),
-                model=model.model,
-                base_url=model.base_url,
-                messages=[
-                    {"role": "system", "content": _DISTILL_SYSTEM},
-                    {"role": "user", "content": content[:6000]},
-                ],
-                temperature=0.2,
-            )
+            with ai_interaction_scope(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                llm_model_id=model.id,
+                source="experience_distillation",
+            ):
+                resp = await chat_complete(
+                    provider=model.provider,
+                    api_key=get_model_api_key(model),
+                    model=model.model,
+                    base_url=model.base_url,
+                    messages=[
+                        {"role": "system", "content": _DISTILL_SYSTEM},
+                        {"role": "user", "content": content[:6000]},
+                    ],
+                    temperature=0.2,
+                )
             fields = _parse_draft_json(resp["choices"][0]["message"].get("content") or "")
     except Exception as e:
         logger.warning(f"Experience distillation LLM call failed: {e}")

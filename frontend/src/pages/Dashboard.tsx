@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useOutletContext } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { agentApi, taskApi, activityApi, fetchJson, tenantApi } from '../services/api';
+import { AIMonitoringCenter } from '../components/AIMonitoringCenter';
 import type { Agent, Task } from '../types';
 
 type LayoutOutletContext = {
@@ -686,6 +687,7 @@ export default function Dashboard() {
                     </div>
                 </>
             )}
+            <AIMonitoringCenter />
         </div>
     );
 }

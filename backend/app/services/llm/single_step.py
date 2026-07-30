@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-import uuid
 
+from app.services.ai_monitoring import record_ai_interaction
 from app.services.token_tracker import TokenUsage, record_token_usage
 
 from .caller import (
@@ -53,14 +55,16 @@ async def complete_llm_once(
     advances a lifecycle. Those decisions belong to the durable Graph.
     """
     api_messages = _convert_messages_for_vision(messages, supports_vision)
-    client = create_llm_client(
-        provider=model.provider,
-        api_key=get_model_api_key(model),
-        model=model.model,
-        base_url=model.base_url,
-        timeout=_get_model_timeout(model),
-    )
+    started_at = time.monotonic()
+    client = None
     try:
+        client = create_llm_client(
+            provider=model.provider,
+            api_key=get_model_api_key(model),
+            model=model.model,
+            base_url=model.base_url,
+            timeout=_get_model_timeout(model),
+        )
         response = await client.complete(
             messages=api_messages,
             tools=tools or None,
@@ -71,10 +75,31 @@ async def complete_llm_once(
                 getattr(model, "max_output_tokens", None),
             ),
         )
+    except Exception as exc:
+        await record_ai_interaction(
+            model=model,
+            messages=api_messages,
+            tools=tools,
+            invocation_kind="complete",
+            error=exc,
+            started_at=started_at,
+        )
+        raise
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
     usage = _usage_from_response_or_estimate(response, api_messages)
+    await record_ai_interaction(
+        model=model,
+        messages=api_messages,
+        tools=tools,
+        invocation_kind="complete",
+        usage=usage,
+        provider_usage_available=bool(response.usage),
+        response_content=response.content,
+        started_at=started_at,
+    )
     if agent_id is not None and usage.total_tokens > 0:
         await record_token_usage(agent_id, usage)
 

@@ -18,8 +18,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import and_, or_, select
 from loguru import logger
+from sqlalchemy import and_, or_, select
 
 from app.database import async_session
 from app.models.agent import Agent
@@ -27,10 +27,10 @@ from app.models.llm import LLMModel
 from app.models.okr import CompanyReport, MemberDailyReport, OKRSettings
 from app.models.org import AgentAgentRelationship, AgentRelationship, OrgMember
 from app.models.user import User
+from app.services.ai_monitoring import ai_interaction_scope
 from app.services.llm.client import chat_complete
 from app.services.llm.model_resolution import active_agent_model_candidates
-from app.services.llm.utils import get_model_api_key, get_max_tokens
-
+from app.services.llm.utils import get_max_tokens, get_model_api_key
 
 MEMBER_DAILY_CHAR_LIMIT = 2000
 BUCKET_SIZE = 20
@@ -510,19 +510,32 @@ async def _generate_llm_report_content(
     )
 
     async def _try_model(model: LLMModel) -> str:
-        response = await chat_complete(
-            provider=model.provider,
-            api_key=get_model_api_key(model),
-            model=model.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            base_url=model.base_url,
-            temperature=model.temperature,
-            max_tokens=min(get_max_tokens(model.provider, model.model, getattr(model, "max_output_tokens", None)), 1800),
-            timeout=float(getattr(model, "request_timeout", None) or 120.0),
-        )
+        with ai_interaction_scope(
+            tenant_id=tenant_id,
+            agent_id=models.okr_agent_id,
+            llm_model_id=model.id,
+            source="okr_reporting",
+        ):
+            response = await chat_complete(
+                provider=model.provider,
+                api_key=get_model_api_key(model),
+                model=model.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                base_url=model.base_url,
+                temperature=model.temperature,
+                max_tokens=min(
+                    get_max_tokens(
+                        model.provider,
+                        model.model,
+                        getattr(model, "max_output_tokens", None),
+                    ),
+                    1800,
+                ),
+                timeout=float(getattr(model, "request_timeout", None) or 120.0),
+            )
         return (
             response.get("choices", [{}])[0]
             .get("message", {})

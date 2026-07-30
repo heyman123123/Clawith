@@ -23,7 +23,6 @@ from app.services.participant_identity import (
     get_or_create_user_participant,
 )
 
-
 _GROUP_SESSION_TYPE = "group"
 _ACTIVE_AGENT_STATUSES = ("creating", "running", "idle")
 
@@ -383,6 +382,7 @@ async def create_group(
     name: str,
     description: str | None = None,
     member_participant_ids: Sequence[uuid.UUID] = (),
+    leader_participant_id: uuid.UUID | None = None,
 ) -> Group:
     """Create a group and its initial manager without owning the transaction."""
     normalized_name = _required_text(
@@ -407,13 +407,28 @@ async def create_group(
         seen_ids.add(participant_id)
         invited_ids.append(participant_id)
 
+    invited_participants: dict[uuid.UUID, Participant] = {}
     for participant_id in invited_ids:
-        await _invitable_participant(
+        invited_participants[participant_id] = await _invitable_participant(
             db,
             tenant_id=tenant_id,
             actor=creator,
             participant_id=participant_id,
         )
+
+    if leader_participant_id is not None:
+        leader = invited_participants.get(leader_participant_id)
+        if leader is None:
+            leader = await _invitable_participant(
+                db,
+                tenant_id=tenant_id,
+                actor=creator,
+                participant_id=leader_participant_id,
+            )
+            invited_ids.append(leader_participant_id)
+            invited_participants[leader_participant_id] = leader
+        if leader.type != "agent":
+            raise GroupChatServiceError("group_leader_invalid", "Group leader must be an active Agent")
 
     now = _now()
     group = Group(
@@ -422,6 +437,7 @@ async def create_group(
         name=normalized_name,
         description=description,
         created_by_participant_id=creator_participant_id,
+        leader_participant_id=leader_participant_id,
         deleted_at=None,
         created_at=now,
         updated_at=now,
@@ -450,6 +466,21 @@ async def create_group(
             )
         )
     await db.flush()
+    # Every newly created group starts with an evidence-driven lifecycle.  This
+    # stays in the caller transaction so a group can never be observed without
+    # its default workflow after a successful create.
+    from app.services.group_workflow.service import create_default_workflow
+
+    await create_default_workflow(
+        db,
+        tenant_id=tenant_id,
+        group_id=group.id,
+        # Ordinary manually-created groups have no Agent leader yet; their
+        # creator still owns the initial workflow instead of leaving every
+        # default item unassigned. Team provisioning supplies its Agent leader.
+        leader_participant_id=leader_participant_id or creator_participant_id,
+        goal=description or normalized_name,
+    )
     return group
 
 

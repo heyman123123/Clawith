@@ -6,11 +6,13 @@ and registers each occurrence on the shared Runtime.
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from croniter import croniter
 from loguru import logger
 from sqlalchemy import select
+
+_last_ai_monitoring_cleanup_date: date | None = None
 
 
 def compute_next_run(cron_expr: str, after: datetime | None = None) -> datetime | None:
@@ -26,8 +28,8 @@ def compute_next_run(cron_expr: str, after: datetime | None = None) -> datetime 
 
 async def _tick():
     """One scheduler tick: find and execute due schedules."""
-    from app.database import async_session
     from app.core.permissions import is_agent_expired
+    from app.database import async_session
     from app.models.agent import Agent
     from app.models.schedule import AgentSchedule
     from app.services.audit_logger import write_audit_log
@@ -36,6 +38,7 @@ async def _tick():
         schedule_occurrence_id,
     )
 
+    global _last_ai_monitoring_cleanup_date
     now = datetime.now(timezone.utc)
 
     try:
@@ -114,6 +117,17 @@ async def _tick():
     except Exception as e:
         logger.exception(f"Scheduler tick error: {e}")
         await write_audit_log("schedule_error", {"error": str(e)[:300]})
+
+    if _last_ai_monitoring_cleanup_date != now.date():
+        try:
+            from app.services.ai_monitoring import purge_expired_ai_interactions
+
+            removed = await purge_expired_ai_interactions()
+            _last_ai_monitoring_cleanup_date = now.date()
+            if removed:
+                logger.info("AI monitoring retention cleanup removed {} expired records", removed)
+        except Exception as exc:
+            logger.warning("AI monitoring retention cleanup failed: {}", exc)
 
 
 async def start_scheduler():

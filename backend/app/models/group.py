@@ -47,6 +47,17 @@ class Group(Base):
         ),
         nullable=False,
     )
+    # The business orchestrator for this group. This is deliberately separate
+    # from GroupMember.role, which remains a human authorization concept.
+    leader_participant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "participants.id",
+            name="fk_groups_leader_participant_id_participants",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

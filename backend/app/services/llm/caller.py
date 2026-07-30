@@ -13,6 +13,7 @@ All paths now support:
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,17 +21,18 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import get_settings
 from app.database import async_session
-
+from app.services.ai_monitoring import record_ai_interaction
+from app.services.llm.model_resolution import active_agent_model_candidates
+from app.services.llm.multimodal_content import estimate_multimodal_tokens
 from app.services.token_tracker import (
     TokenUsage,
-    record_token_usage,
-    extract_token_usage,
     estimate_token_usage_from_chars,
+    extract_token_usage,
+    record_token_usage,
 )
-from app.services.llm.multimodal_content import estimate_multimodal_tokens
-from app.services.llm.model_resolution import active_agent_model_candidates
 
 from .client import (
     LLMError,
@@ -38,7 +40,7 @@ from .client import (
     normalize_llm_finish_reason,
     normalize_textual_tool_protocol,
 )
-from .failover import classify_error, FailoverErrorType
+from .failover import FailoverErrorType, classify_error
 from .finish import find_finish_call
 from .utils import LLMMessage, create_llm_client, get_max_tokens, get_model_api_key
 
@@ -192,7 +194,7 @@ def is_retryable_error(result: str) -> bool:
     return classify_error(Exception(result)) != FailoverErrorType.NON_RETRYABLE
 
 
-def _get_model_timeout(model: "LLMModel") -> float:
+def _get_model_timeout(model: LLMModel) -> float:
     """Return the effective request timeout for a model."""
     return float(getattr(model, "request_timeout", None) or 120.0)
 
@@ -252,8 +254,8 @@ async def _get_user_name(user_id) -> str | None:
     if not user_id:
         return None
     try:
-        from app.models.user import User as _UserModel
         from app.models.agent import Agent as _AgentModel
+        from app.models.user import User as _UserModel
         async with async_session() as _udb:
             _ur = await _udb.execute(select(_UserModel).where(_UserModel.id == user_id))
             _u = _ur.scalar_one_or_none()
@@ -653,6 +655,7 @@ async def call_llm(
                     await client.close()
                     return _token_limit_msg
 
+        round_started_at = time.monotonic()
         try:
             # Use streaming API for real-time responses
             async def _buffer_chunk(_text: str) -> None:
@@ -670,12 +673,34 @@ async def call_llm(
                 on_thinking=on_thinking,
             )
         except LLMError as e:
+            await record_ai_interaction(
+                model=model,
+                messages=api_messages,
+                tools=tools_for_llm,
+                invocation_kind="stream",
+                error=e,
+                started_at=round_started_at,
+                agent_id=agent_id,
+                session_id=session_id or None,
+                source="legacy_llm",
+            )
             logger.error(f"[LLM] LLMError: provider={getattr(model, 'provider', '?')} model={getattr(model, 'model', '?')} {e}")
             if agent_id and _unsaved_usage.total_tokens > 0:
                 await record_token_usage(agent_id, _unsaved_usage)
             await client.close()
             return f"[LLM Error] {e}"
         except Exception as e:
+            await record_ai_interaction(
+                model=model,
+                messages=api_messages,
+                tools=tools_for_llm,
+                invocation_kind="stream",
+                error=e,
+                started_at=round_started_at,
+                agent_id=agent_id,
+                session_id=session_id or None,
+                source="legacy_llm",
+            )
             logger.exception(f"[LLM] Unexpected error: {type(e).__name__}: {str(e)[:300]}")
             if agent_id and _unsaved_usage.total_tokens > 0:
                 await record_token_usage(agent_id, _unsaved_usage)
@@ -685,6 +710,19 @@ async def call_llm(
         # Account for the provider's raw output before protocol normalization
         # removes control envelopes from user-visible content.
         _usage_this_round = _usage_from_response_or_estimate(response, api_messages)
+        await record_ai_interaction(
+            model=model,
+            messages=api_messages,
+            tools=tools_for_llm,
+            invocation_kind="stream",
+            usage=_usage_this_round,
+            provider_usage_available=bool(response.usage),
+            response_content=response.content,
+            started_at=round_started_at,
+            agent_id=agent_id,
+            session_id=session_id or None,
+            source="legacy_llm",
+        )
         _accumulated_usage.add(_usage_this_round)
         _unsaved_usage.add(_usage_this_round)
 
@@ -1020,8 +1058,8 @@ async def call_agent_llm(
     supports_vision: bool = False,
 ) -> str:
     """Call the agent's LLM with automatic failover support."""
-    from app.models.agent import Agent
     from app.core.permissions import is_agent_expired
+    from app.models.agent import Agent
 
     # Load agent
     agent_result = await db.execute(
@@ -1073,9 +1111,9 @@ async def call_agent_llm(
 
 
 __all__ = [
+    "FailoverGuard",
+    "call_agent_llm",
     "call_llm",
     "call_llm_with_failover",
-    "call_agent_llm",
-    "FailoverGuard",
     "is_retryable_error",
 ]

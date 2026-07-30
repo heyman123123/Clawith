@@ -32,6 +32,7 @@ import {
     IconChevronRight,
     IconCheck,
     IconChevronDown,
+    IconSparkles,
 } from '@tabler/icons-react';
 import { useAppStore } from '../stores';
 import TalentMarketModal from '../components/TalentMarketModal';
@@ -1069,6 +1070,12 @@ export default function Layout() {
                                 <IconBuildingMonument size={14} stroke={1.5} />
                             </span>
                             <span className="sidebar-item-text">{t('nav.plaza', 'Plaza')}</span>
+                        </NavLink>
+                        <NavLink to="/team-builder" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconSparkles size={14} stroke={1.5} />
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.teamBuilder', '智能搭建团队')}</span>
                         </NavLink>
                         <NavLink to="/groups" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
                             <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>

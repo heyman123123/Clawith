@@ -22,6 +22,9 @@ from app.models.skill import Skill, SkillFile  # noqa: F401
 from app.models.chat_session import ChatSession  # noqa: F401
 from app.models.participant import Participant  # noqa: F401
 from app.models.group import Group, GroupMember  # noqa: F401
+from app.models.team_builder import TeamBuildDraft, TeamProvisionJob, TeamProvisionMember  # noqa: F401
+from app.models.ai_interaction import AIInteractionLog  # noqa: F401
+from app.models.group_workflow import GroupWorkflow, GroupWorkflowDraft, GroupWorkflowEvent, GroupWorkflowItem, GroupWorkflowStage  # noqa: F401
 from app.models.activity_log import AgentActivityLog  # noqa: F401
 from app.models.invitation_code import InvitationCode  # noqa: F401
 from app.models.org import OrgDepartment, OrgMember, AgentRelationship, AgentAgentRelationship  # noqa: F401

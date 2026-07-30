@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconPlus, IconRobot, IconSettings, IconUser, IconX } from '@tabler/icons-react';
+import { useQuery } from '@tanstack/react-query';
+import { aiMonitoringApi } from '../../services/aiMonitoringApi';
+import { useAuthStore } from '../../stores';
+import AIInteractionDetailDrawer from '../../components/AIInteractionDetailDrawer';
+import AIInteractionList from '../../components/AIInteractionList';
 import { groupApi } from '../../services/groupApi';
 import GroupTextFileEditor from './GroupTextFileEditor';
 import GroupWorkspaceTab from './GroupWorkspaceTab';
 import GroupMemoryTab from './GroupMemoryTab';
+import GroupWorkflowTab from './GroupWorkflowTab';
 import type { GroupMember } from '../../types/group';
 
-type PanelTab = 'members' | 'announcement' | 'workspace' | 'memory';
+type PanelTab = 'members' | 'monitoring' | 'workflow' | 'announcement' | 'workspace' | 'memory';
 
 const PANEL_WIDTH_KEY = 'groups.panelWidth';
 // Default sized by measurement, not taste: a long realistic member name — 12 CJK chars plus the
@@ -24,6 +30,9 @@ interface GroupSidePanelProps {
     groupId: string;
     groupName: string;
     members: GroupMember[];
+    leaderParticipantId?: string | null;
+    myParticipantId?: string;
+    isManager: boolean;
     onInvite: () => void;
     onOpenSettings: () => void;
     onClose: () => void;
@@ -39,12 +48,25 @@ export default function GroupSidePanel({
     groupId,
     groupName,
     members,
+    leaderParticipantId,
+    myParticipantId,
+    isManager,
     onInvite,
     onOpenSettings,
     onClose,
 }: GroupSidePanelProps) {
     const { t } = useTranslation();
     const [tab, setTab] = useState<PanelTab>('members');
+    const [monitoringPage, setMonitoringPage] = useState(1);
+    const [selectedInteractionId, setSelectedInteractionId] = useState<string | null>(null);
+    const user = useAuthStore((state) => state.user);
+    const isAdmin = user?.role === 'org_admin' || user?.role === 'platform_admin' || !!user?.is_platform_admin;
+    const monitoring = useQuery({
+        queryKey: ['group-ai-monitoring', groupId, monitoringPage],
+        queryFn: () => aiMonitoringApi.groupInteractions(groupId, monitoringPage),
+        enabled: isAdmin && tab === 'monitoring',
+        staleTime: 10_000,
+    });
 
     // The panel's left edge is a resize handle; the width is remembered across sessions.
     const [width, setWidth] = useState(() => {
@@ -73,8 +95,9 @@ export default function GroupSidePanel({
         document.body.style.userSelect = '';
     };
 
-    const people = members.filter((member) => member.participant_type === 'user');
-    const agents = members.filter((member) => member.participant_type === 'agent');
+    const leader = members.find((member) => member.participant_id === leaderParticipantId);
+    const people = members.filter((member) => member.participant_type === 'user' && member !== leader);
+    const agents = members.filter((member) => member.participant_type === 'agent' && member !== leader);
 
     const renderMember = (member: GroupMember) => (
         <div key={member.id} className="group-member-row">
@@ -89,6 +112,9 @@ export default function GroupSidePanel({
                     {member.role === 'manager' && (
                         <span className="group-badge-manager">{t('groups.manager', '群管理')}</span>
                     )}
+                    {member.participant_id === leaderParticipantId && (
+                        <span className="group-badge-leader">{t('groups.teamBuilderLeader', '群主')}</span>
+                    )}
                     {member.is_deleted && (
                         <span className="group-badge-deleted">{t('groups.deletedBadge', '已删除')}</span>
                     )}
@@ -102,6 +128,8 @@ export default function GroupSidePanel({
 
     const TABS: { key: PanelTab; label: string }[] = [
         { key: 'members', label: `${t('groups.members', '成员')} · ${members.length}` },
+        ...(isAdmin ? [{ key: 'monitoring' as const, label: t('groups.aiMonitoring', 'AI 监控') }] : []),
+        { key: 'workflow', label: t('groups.workflow', '推进') },
         { key: 'announcement', label: t('groups.announcement', '群公告') },
         { key: 'workspace', label: t('groups.workspace', '文件') },
         { key: 'memory', label: t('groups.memory', '记忆') },
@@ -157,6 +185,14 @@ export default function GroupSidePanel({
                             {t('groups.inviteTitle', '邀请成员')}
                         </button>
 
+                        {leader && <>
+                            <div className="group-panel-label">
+                                <IconRobot size={12} stroke={1.7} />
+                                {t('groups.teamBuilderLeader', '群主')}
+                            </div>
+                            {renderMember(leader)}
+                        </>}
+
                         {agents.length > 0 && (
                             <>
                                 <div className="group-panel-label">
@@ -175,6 +211,20 @@ export default function GroupSidePanel({
                     </>
                 )}
 
+                {tab === 'monitoring' && isAdmin && <div style={{ margin: '-8px -12px' }}>
+                    <div style={{ padding: '10px 12px', color: 'var(--text-tertiary)', fontSize: '11px' }}>{t('groups.aiMonitoringNote', '仅显示本群会话触发的 AI 调用 · 脱敏上下文')}</div>
+                    <div style={{ overflowX: 'auto' }}>
+                        <AIInteractionList data={monitoring.data} loading={monitoring.isLoading} error={monitoring.isError} onSelect={setSelectedInteractionId} onPage={setMonitoringPage} />
+                    </div>
+                </div>}
+
+                {tab === 'workflow' && <GroupWorkflowTab
+                    groupId={groupId}
+                    members={members}
+                    myParticipantId={myParticipantId}
+                    isManager={isManager}
+                />}
+
                 {tab === 'announcement' && (
                     <GroupTextFileEditor
                         queryKey={['group-announcement', groupId]}
@@ -189,6 +239,7 @@ export default function GroupSidePanel({
 
                 {tab === 'memory' && <GroupMemoryTab groupId={groupId} members={members} />}
             </div>
+            <AIInteractionDetailDrawer interactionId={selectedInteractionId} onClose={() => setSelectedInteractionId(null)} />
         </aside>
     );
 }

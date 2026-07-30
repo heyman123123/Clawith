@@ -59,7 +59,8 @@
     "language": "Language",
     "plaza": "Plaza",
     "okr": "OKR",
-    "groups": "Groups"
+    "groups": "Groups",
+    "teamBuilder": "Build a team"
   },
   "talentMarket": {
     "title": "Talent Market",
@@ -194,7 +195,35 @@
     "globalActivity": "Global Activity",
     "recentCount": "Last {{count}}",
     "noAgents": "No digital employees yet, create your first one",
-    "createFirst": "Create first digital employee"
+    "createFirst": "Create first digital employee",
+    "aiMonitoring": {
+      "title": "AI Monitoring Center",
+      "retention": "Admin only · Redacted context retained for 30 days",
+      "calls24h": "Calls (24h)",
+      "tokens24h": "Tokens (24h)",
+      "errors24h": "Errors (24h)",
+      "recentCalls": "Recent calls",
+      "agent": "Agent",
+      "platform": "Platform service",
+      "model": "Model",
+      "tokens": "Tokens",
+      "duration": "Duration",
+      "status": "Status",
+      "success": "Success",
+      "error": "Error",
+      "estimated": "Estimated",
+      "empty": "No AI calls recorded yet",
+      "loadFailed": "Failed to load AI monitoring data",
+      "details": "Call details",
+      "context": "Redacted context",
+      "response": "Response",
+      "errorDetails": "Error details"
+      ,"startedAt": "Started"
+      ,"finishedAt": "Finished"
+      ,"records": "{{count}} records"
+      ,"previousPage": "Previous page"
+      ,"nextPage": "Next page"
+    }
   },
   "agent": {
     "status": {
@@ -2155,6 +2184,14 @@
     "polling": "polling",
     "offline": "disconnected",
     "announcement": "Announcement",
+    "workflow": "Workflow",
+    "workflowManage": "Manage workflow",
+    "workflowLoading": "Loading command center…",
+    "workflowRetry": "Retry",
+    "workflowPaused": "Workflow is paused",
+    "workflowApproval": "Awaiting approval",
+    "aiMonitoring": "AI monitoring",
+    "aiMonitoringNote": "AI calls triggered by this group's sessions · Redacted context",
     "announcementNote": "The announcement is injected into the context of any agent mentioned here — use it for goals and ground rules.",
     "announcementPlaceholder": "Group goals, collaboration rules, what agents should do here...",
     "workspace": "Files",
@@ -2188,7 +2225,54 @@
     "memberCount_one": "{{count}} member",
     "showPanel": "Show panel",
     "hidePanel": "Hide panel",
-    "dragToResize": "Drag to resize"
+    "dragToResize": "Drag to resize",
+    "teamBuilderEntry": "Build a team with AI",
+    "teamBuilderPageTitle": "Build a team that can execute",
+    "teamBuilderPageLead": "Confirm the roles and leader first; we then create the team, activate its leader, and start collaboration in the group.",
+    "teamBuilderCompletedCount": "teams created",
+    "teamBuilderHistoryTitle": "My teams",
+    "teamBuilderHistoryHint": "Open a completed team directly in its group chat.",
+    "teamBuilderHistoryEmpty": "No team builds yet. Create your first collaborative team.",
+    "teamBuilderHistoryFailed": "Could not load your team list",
+    "teamBuilderOpenGroup": "Open group",
+    "teamBuilderTitle": "Build a team with AI",
+    "teamBuilderFormHint": "Describe the goal first. We will generate a reviewable leader and team proposal.",
+    "teamBuilderName": "Team name (optional)",
+    "teamBuilderRequirement": "Requirement",
+    "teamBuilderRequirementPlaceholder": "For example: build a team for next month's product launch to complete research, a plan, and deliverables.",
+    "teamBuilderGenerate": "Generate plan",
+    "teamBuilderReviewTitle": "Confirm team plan",
+    "teamBuilderReviewHint": "Missing agents and the group are created only after confirmation. The leader receives your first instruction and delegates publicly.",
+    "teamBuilderEditablePlan": "Plan (editable)",
+    "teamBuilderLeader": "Team leader",
+    "teamBuilderConfirm": "Confirm and create",
+    "teamBuilderProgressTitle": "Building the team",
+    "teamBuilderProgressHint": "Creating missing agents, opening the group, and activating the leader as you.",
+    "teamBuilderRestoreFailed": "Could not restore the build progress",
+    "teamBuilderProgressFailed": "Could not read the provisioning progress",
+    "teamBuilderPlanFailed": "Could not generate the plan. Please try again later.",
+    "teamBuilderPlanJsonInvalid": "The plan format is invalid. Check it and try again.",
+    "teamBuilderConfirmFailed": "Could not confirm the plan",
+    "teamBuilderRetrying": "The system will safely keep retrying this job. You can close this window; progress is saved.",
+    "teamBuilderStatus": {
+      "queued": "Queued",
+      "validating": "Validating plan",
+      "provisioning_agents": "Preparing agents",
+      "waiting_for_agents": "Waiting for agents",
+      "creating_group": "Creating group",
+      "activating": "Activating leader",
+      "completed": "Completed",
+      "retryable_failed": "Waiting to retry",
+      "failed": "Creation failed"
+    },
+    "teamBuilderSource": {
+      "existing": "Reuse existing",
+      "new": "Create new"
+    },
+    "teamLeaderDisplay": "Leader: {{name}}",
+    "setTeamLeader": "Set as leader",
+    "selectLeaderHint": "Select an agent as the group leader",
+    "selectedWithLeader": "{{count}} selected; leader assigned"
   },
   "experience": {
     "title": "Experience",
