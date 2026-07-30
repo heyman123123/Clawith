@@ -103,25 +103,36 @@ async def test_reconcile_stops_at_approval_gate(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_reconcile_waits_for_confirm_when_okr_workflow_push_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    workflow = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), version=4, status="active")
-    stage = SimpleNamespace(id=uuid.uuid4(), title="验收", requires_approval=False, status="active")
+async def test_reconcile_does_not_block_on_okr_workflow_push(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OKR project push must not invent approval gates on non-approval stages."""
+    workflow = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), version=4, status="active", group_id=uuid.uuid4())
+    stage = SimpleNamespace(
+        id=uuid.uuid4(), title="澄清目标", requires_approval=False, status="active", position=0, completed_at=None
+    )
     item = SimpleNamespace(status="done")
-    db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [item]))))
+    next_stage = SimpleNamespace(id=uuid.uuid4(), position=1, status="pending", started_at=None)
+    db = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [item])),
+                SimpleNamespace(scalar_one_or_none=lambda: next_stage),
+            ]
+        )
+    )
     action = SimpleNamespace(id=uuid.uuid4())
+    monkeypatch.setattr(service, "_event", AsyncMock())
     monkeypatch.setattr(service, "_leader_action", AsyncMock(return_value=action))
-    monkeypatch.setattr(service, "_decision_action", AsyncMock(return_value=None))
     monkeypatch.setattr(service, "_workflow_okr_requires_human_confirm", AsyncMock(return_value=True))
     notify = AsyncMock()
     monkeypatch.setattr(service, "_notify_okr", notify)
 
     result = await service._reconcile(db, workflow=workflow, stage=stage)
 
-    assert stage.status == "awaiting_approval"
-    assert workflow.status == "awaiting_approval"
+    assert stage.status == "completed"
+    assert workflow.status == "active"
+    assert result.next_stage is next_stage
     assert result.leader_action is action
-    notify.assert_awaited_once()
-    assert notify.await_args.args[1] == "approval_required"
+    assert any(call.args[1] == "stage_completed" for call in notify.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -148,7 +159,7 @@ async def test_complete_stage_okr_only_after_human_confirm(monkeypatch: pytest.M
 
     await service._complete_stage(db, workflow=workflow, stage=stage, source="workflow")
     assert notify.await_count >= 1
-    assert all(call.kwargs.get("confirmed") is False for call in notify.await_args_list)
+    assert any(call.kwargs.get("confirmed") is True for call in notify.await_args_list)
 
     notify.reset_mock()
     stage.status = "awaiting_approval"

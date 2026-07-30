@@ -3563,6 +3563,70 @@ async def test_group_cross_space_aliases_fail_before_provider_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_group_cross_space_allowed_with_explicit_grant(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    agent.autonomy_policy = {"allow_group_cross_space": True}
+    tool_name = "send_platform_message"
+    call = _call("granted-platform", tool_name)
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"] = RunInputSnapshots(
+        session_context={"version": 0},
+        session_context_version=0,
+        recent_session_messages=(),
+        related_run_summaries=(),
+        initial_input={"group_context": {"group_id": str(uuid.uuid4())}},
+    )
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(state["registry"].run_id),
+        "granted-platform",
+        tool_name,
+    )
+    dispatched: list[str] = []
+
+    async def tools(agent_id):
+        assert agent_id == agent.id
+        return [{"type": "function", "function": {"name": tool_name}}]
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def mark_succeeded(db, **kwargs):
+        del db
+        execution.status = "succeeded"
+        execution.result_summary = kwargs.get("result_summary") or "ok"
+        return execution
+
+    async def execute(*args, **kwargs):
+        del args, kwargs
+        dispatched.append(tool_name)
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="notification accepted",
+            result_ref=None,
+            error_code=None,
+            retryable=False,
+            metadata={},
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark_succeeded)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=tools,
+        tool_executor=execute,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert dispatched == [tool_name]
+    assert result.messages[0]["execution_status"] == "succeeded"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("is_group", "tool_name"),
     (

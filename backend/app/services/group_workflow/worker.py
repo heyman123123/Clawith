@@ -106,7 +106,8 @@ def build_leader_wake_content(payload: dict[str, Any]) -> str:
     if kind == "stage_activated":
         return (
             f"工作流推进指令（阶段激活）：「{stage}」已激活{item_part}。"
-            "请立刻在群内公开分派下一步可执行工作，按 SOP/证据推进，禁止按时间等待。"
+            "请立刻在群内公开分派下一步可执行工作，并对你负责的工作项调用 "
+            "group_workflow_submit_evidence 提交证据以推进阶段；禁止等 admin/人类批准。"
             "项目级拍板交给决策者，不要让人类或成员做项目决策。"
         )
     if kind == "workflow_resumed":

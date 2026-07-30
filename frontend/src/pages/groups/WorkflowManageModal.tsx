@@ -101,7 +101,7 @@ export default function WorkflowManageModal({ groupId, workflow, onClose, onChan
                 <section className="workflow-manage-section">
                     <div className="workflow-manage-section-title">生命周期记录</div>
                     <div className="workflow-event-list">{events.data?.items.map((event) => <div className="workflow-event" key={event.id}><span>{event.event_type.replace(/_/g, ' ')}</span><time>{new Date(event.created_at).toLocaleString()}</time></div>)}</div>
-                    {(events.data?.total ?? 0) > events.data!.page_size && <div className="workflow-pagination"><button type="button" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>上一页</button><span>{page} / {Math.ceil((events.data?.total ?? 0) / (events.data?.page_size ?? 20))}</span><button type="button" disabled={page * (events.data?.page_size ?? 20) >= (events.data?.total ?? 0)} onClick={() => setPage((value) => value + 1)}>下一页</button></div>}
+                    {(events.data?.total ?? 0) > (events.data?.page_size ?? 20) && <div className="workflow-pagination"><button type="button" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>上一页</button><span>{page} / {Math.ceil((events.data?.total ?? 0) / (events.data?.page_size ?? 20))}</span><button type="button" disabled={page * (events.data?.page_size ?? 20) >= (events.data?.total ?? 0)} onClick={() => setPage((value) => value + 1)}>下一页</button></div>}
                 </section>
                 {error && <p className="workflow-form-error">{error}</p>}
             </div>

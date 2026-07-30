@@ -17,8 +17,11 @@ export default function AIInteractionList({
     const { t } = useTranslation();
     if (loading) return <div style={{ padding: '16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>{t('common.loading')}</div>;
     if (error) return <div style={{ padding: '16px', color: 'var(--error)', fontSize: '12px' }}>{t('dashboard.aiMonitoring.loadFailed')}</div>;
-    if (!data || data.interactions.length === 0) return <div style={{ padding: '16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>{t('dashboard.aiMonitoring.empty')}</div>;
-    const lastPage = Math.max(1, Math.ceil(data.total / data.page_size));
+    if (!data || !Array.isArray(data.interactions) || data.interactions.length === 0) {
+        return <div style={{ padding: '16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>{t('dashboard.aiMonitoring.empty')}</div>;
+    }
+    const pageSize = data.page_size || 20;
+    const lastPage = Math.max(1, Math.ceil((data.total || 0) / pageSize));
     return <>
         <div style={{ minWidth: '700px' }}>
             <div style={gridStyle}>
@@ -29,9 +32,9 @@ export default function AIInteractionList({
         <footer style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', padding: '10px 16px', borderTop: '1px solid var(--border-subtle)', color: 'var(--text-tertiary)', fontSize: '11px' }}>
             <span>{t('dashboard.aiMonitoring.records', { count: data.total })}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <button type="button" className="btn btn-ghost" disabled={data.page <= 1} onClick={() => onPage(data.page - 1)} aria-label={t('dashboard.aiMonitoring.previousPage')}><IconChevronLeft size={15} /></button>
-                <span style={{ minWidth: '54px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{data.page} / {lastPage}</span>
-                <button type="button" className="btn btn-ghost" disabled={data.page >= lastPage} onClick={() => onPage(data.page + 1)} aria-label={t('dashboard.aiMonitoring.nextPage')}><IconChevronRight size={15} /></button>
+                <button type="button" className="btn btn-ghost" disabled={(data.page || 1) <= 1} onClick={() => onPage((data.page || 1) - 1)} aria-label={t('dashboard.aiMonitoring.previousPage')}><IconChevronLeft size={15} /></button>
+                <span style={{ minWidth: '54px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{data.page || 1} / {lastPage}</span>
+                <button type="button" className="btn btn-ghost" disabled={(data.page || 1) >= lastPage} onClick={() => onPage((data.page || 1) + 1)} aria-label={t('dashboard.aiMonitoring.nextPage')}><IconChevronRight size={15} /></button>
             </div>
         </footer>
     </>;

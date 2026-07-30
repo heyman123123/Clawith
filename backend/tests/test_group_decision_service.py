@@ -124,6 +124,14 @@ async def test_apply_routine_notifies_leader(monkeypatch: pytest.MonkeyPatch) ->
     assert notify.await_args.kwargs["status"] == "auto_applied"
 
 
+def test_with_cross_space_grant_sets_flag() -> None:
+    from app.services.group_decision.seed import _with_cross_space_grant
+
+    assert _with_cross_space_grant(None)["allow_group_cross_space"] is True
+    assert _with_cross_space_grant({"read_files": "L1"})["allow_group_cross_space"] is True
+    assert _with_cross_space_grant({"read_files": "L1"})["read_files"] == "L1"
+
+
 def test_build_decision_wake_content() -> None:
     from app.services.group_decision.wake import build_decision_wake_content
 

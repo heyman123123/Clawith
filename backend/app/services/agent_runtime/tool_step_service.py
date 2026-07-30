@@ -458,6 +458,14 @@ def _is_group_agent_run(state: RuntimeGraphState) -> bool:
     )
 
 
+def _agent_allows_group_cross_space(agent: object) -> bool:
+    """Decision-maker (and similar) agents may carry an explicit cross-space grant."""
+    policy = getattr(agent, "autonomy_policy", None)
+    if not isinstance(policy, Mapping):
+        return False
+    return bool(policy.get("allow_group_cross_space"))
+
+
 def _is_group_scoped_workspace_call(
     state: RuntimeGraphState,
     tool_name: str,
@@ -1676,6 +1684,7 @@ class RuntimeToolStepService:
                 if (
                     _is_group_agent_run(state)
                     and canonical_cross_space_action is not None
+                    and not _agent_allows_group_cross_space(agent)
                 ):
                     outcome = await self._settle_outcome(
                         tenant_id=tenant_id,

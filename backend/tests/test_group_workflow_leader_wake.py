@@ -182,6 +182,7 @@ def test_leader_instruction_requires_immediate_human_ping() -> None:
     assert "@Bob" in text
     assert "decision maker" in text
     assert "`at` tool" in text
+    assert "admin" in text.lower() or "humans" in text
 
 
 def test_leader_instruction_pings_decision_maker_on_approval() -> None:
@@ -197,4 +198,10 @@ def test_leader_instruction_pings_decision_maker_on_approval() -> None:
     assert dm_id in text
     assert "@小D" in text
     assert "group_decision_classify_and_act" in text
-    assert "do NOT ask humans" in text or "Do not solicit" in text
+    assert "Do NOT ask admin" in text
+
+
+def test_leader_instruction_stage_activated_requires_evidence_tool() -> None:
+    text = _leader_workflow_instruction({"kind": "stage_activated"})
+    assert "group_workflow_submit_evidence" in text
+    assert "human/admin" in text or "admin/humans" in text

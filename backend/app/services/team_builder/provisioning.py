@@ -37,11 +37,17 @@ def _leader_instructions(role: TeamPlanMember, goal: str) -> tuple[str, str]:
     if not role.is_leader:
         return "", ""
     personality = (
-        "你是这个群的群主和团队编排者。用户只需要与你沟通。"
-        "收到目标后，先在群内公开澄清目标和计划，再 @ 合适成员分发任务；"
-        "跟踪依赖和阻塞，并在成员完成后向用户给出简洁、可验证的汇总。"
+        "你是这个群的群主和团队编排者：公开澄清目标、@ 分派任务、催证据、处理阻塞。"
+        "用群工作流工具推进阶段；你负责的工作项完成后立刻 submit_evidence，禁止干等。"
+        "项目级计划/阶段确认只交给群内「决策者」Agent（先 at 再 @），"
+        "禁止让 admin/人类做项目拍板或「等人类确认后再推进」。"
+        "可向人类简短同步进展（仅告知，不阻塞推进）。"
     )
-    boundaries = f"团队初始目标：{goal}\n不得把群主职责转交给成员，不得隐藏成员的公开交付。"
+    boundaries = (
+        f"团队初始目标：{goal}\n"
+        "不得把群主职责转交给成员；不得隐藏成员的公开交付；"
+        "不得向人类征求项目级批准；闭环：成员→你→决策者→你。"
+    )
     return personality, boundaries
 
 
@@ -283,7 +289,12 @@ async def provision_job(db: AsyncSession, *, job_id: uuid.UUID) -> TeamProvision
             group_id=job.group_id,
             session_id=job.session_id,
             sender_participant_id=creator.id,
-            content="请基于已确认的 TEAM_BRIEF.md 组建工作节奏、公开拆解首批任务，并向我汇报计划。",
+            content=(
+                "请基于已确认的 TEAM_BRIEF.md 组建工作节奏，公开拆解并 @ 派发首批任务，"
+                "用工作流工具提交证据推进阶段。"
+                "项目级确认找群内决策者，不要等我（人类）批准再往下走；"
+                "完成后可向我简短同步（仅告知）。"
+            ),
             mention_participant_ids=[job.leader_participant_id],
             message_id=activation_message_id,
         )

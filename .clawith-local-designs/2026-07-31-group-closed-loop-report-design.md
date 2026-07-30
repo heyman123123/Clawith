@@ -1,8 +1,21 @@
 # 群内闭环汇报：成员 → 群主 → 决策者 → 群主
 
-**Status:** approved  
-**Date:** 2026-07-31  
-**Depends on:** `2026-07-30-group-decision-maker-design.md`
+## 决策者跨空间授权（2026-07-31）
+
+创建/改绑/懒加载决策者时默认写入：
+- `autonomy_policy.allow_group_cross_space = true`（群 Run 内可走 `send_platform_message` 等跨空间工具）
+- `AgentPermission`：创建者 `manage` + 群人类 manager（及显式汇报对象）`use`
+
+打开推进 tab 时也会回填已有决策者的上述授权。
+
+
+## 补充修复（阶段卡住 / 群主找 admin）
+
+- 去掉 OKR「项目推动」对**无审批阶段**的强制 `awaiting_approval`（OKR 只催收集，不挡推进）。
+- 打开推进 tab 时：若卡在「无审批却 awaiting_approval」的遗留闸门，自动完成或退回 active。
+- 团队群主 soul / 激活文案：禁止等人类拍板；计划就绪后必须 `submit_evidence`。
+- 群主 runtime SOP：禁止向 admin 求项目批准；阶段激活后立刻交证据工具推进。
+
 
 ## 问题
 

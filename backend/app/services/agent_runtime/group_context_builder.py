@@ -35,10 +35,13 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
     """SOP-first leader guidance: never wait on heartbeat/cron; chase evidence; DM owns project confirms."""
     base = (
         "As group leader, advance only by SOP/evidence events. "
-        "Never wait for heartbeat, cron, or wall-clock time to take the next step. "
-        "Publicly assign the next actionable work, chase evidence, and resolve blockers. "
-        "Members report progress to YOU; when project-level sign-off is needed, escalate to the "
-        "decision maker (call `at` then @ them) — do NOT ask humans or members to make project decisions. "
+        "Never wait for heartbeat, cron, wall-clock time, or human/admin replies to take the next step. "
+        "Publicly assign work, chase evidence, resolve blockers. "
+        "When YOUR assigned workflow item is ready, immediately call group_workflow_submit_evidence — "
+        "do NOT invent a human approval gate. "
+        "Members report to YOU; project-level sign-off goes only to the decision maker "
+        "(call `at` then @ them). Never ask admin/humans/members to approve plans or stages. "
+        "A short FYI to humans is OK only after you have already advanced via tools. "
         "When you must @ someone: call the `at` tool with their participant_id first, then include "
         "@DisplayName in the visible reply; never write @Name without calling `at`."
     )
@@ -84,7 +87,7 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
             return (
                 f"{base} Approval gate is active: call `at` with participant_id={dm_id} "
                 f"and mention @{dm_name or '决策者'} so they run group_decision_classify_and_act. "
-                "Keep chasing evidence. Do not solicit project sign-off from humans or members."
+                "Keep chasing evidence. Do NOT ask admin or humans to confirm."
             )
         return (
             f"{base} Approval gate is active but no decision maker is bound — "
@@ -101,7 +104,16 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
             "do NOT use the digest itself to advance stages."
         )
     if kind == "stage_activated":
-        return f"{base} A stage just activated: immediately distribute the next concrete assignments."
+        dm_hint = (
+            f" Project gates later: escalate to @{dm_name or '决策者'} (participant_id={dm_id}) via `at`."
+            if dm_id
+            else ""
+        )
+        return (
+            f"{base} A stage just activated: distribute assignments now, then submit evidence on "
+            f"your own deliverable with group_workflow_submit_evidence so the stage can advance."
+            f"{dm_hint}"
+        )
     if kind == "workflow_completed":
         return f"{base} The workflow is completed: publicly confirm completion; do not invent new stages."
     return base

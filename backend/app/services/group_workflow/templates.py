@@ -10,7 +10,7 @@ from app.services.group_workflow.contracts import WorkflowItemPlan, WorkflowPlan
 def _stage(key: str, title: str, goal: str, *, owner: uuid.UUID | None, approval: bool = False) -> WorkflowStagePlan:
     return WorkflowStagePlan(
         key=key, title=title, goal=goal, owner_participant_id=owner, requires_approval=approval,
-        acceptance_criteria=["群主确认交付满足当前阶段目标"] if approval else [],
+        acceptance_criteria=["决策者确认交付满足当前阶段目标"] if approval else [],
         items=[WorkflowItemPlan(item_key=f"{key}_deliverable", title=title, description=goal, assignee_participant_id=owner)],
     )
 

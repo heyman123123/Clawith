@@ -41,9 +41,17 @@ const leaderActionCopy: Record<string, { title: string; hint: string }> = {
         title: '阶段已激活',
         hint: '请在群内公开分派下一步可执行工作，按证据推进，不要干等。',
     },
+    member_progress: {
+        title: '成员已提交进度',
+        hint: '请确认进度、分派下一步；需项目拍板时转交决策者。',
+    },
     approval_required: {
         title: '等待确认',
         hint: '证据已齐备。催成员补齐缺口，并由决策者或管理员确认后进入下一阶段。',
+    },
+    decision_resolved: {
+        title: '决策已定稿',
+        hint: '请按结论立刻公开分派下一步或处理遗留项。',
     },
     blocker: {
         title: '存在阻塞',

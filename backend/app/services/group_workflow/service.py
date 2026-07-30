@@ -47,16 +47,13 @@ async def _notify_okr(
 
 
 async def _workflow_okr_requires_human_confirm(db: AsyncSession, *, tenant_id: uuid.UUID) -> bool:
-    """When project-progress OKR push is on, stage completion waits for human confirm."""
-    try:
-        from app.models.okr import OKRSettings
-        from app.services.okr_settings_helpers import workflow_push_active
+    """Deprecated gate helper — OKR must not block stage advancement.
 
-        settings = await db.scalar(select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
-        return settings is not None and workflow_push_active(settings)
-    except Exception:
-        logger.exception("Failed to resolve OKR workflow confirm gate for tenant=%s", tenant_id)
-        return False
+    Kept for call-site compatibility / tests; always returns False. Stage gates
+    come only from ``stage.requires_approval`` (decision maker / manager).
+    """
+    _ = db, tenant_id
+    return False
 
 
 class GroupWorkflowServiceError(RuntimeError):
@@ -360,7 +357,11 @@ async def _decision_action(
 
 
 async def ensure_decision_gate_wake(db: AsyncSession, *, workflow: GroupWorkflow) -> GroupWorkflowEvent | None:
-    """For stuck awaiting_approval stages: ensure DM exists and a pending decision_action."""
+    """For stuck awaiting_approval stages: ensure DM exists and a pending decision_action.
+
+    Also clears legacy OKR-forced gates on stages that do not require approval:
+    those should auto-advance so the group is not stuck waiting for humans.
+    """
     if workflow.status != "awaiting_approval" or workflow.current_stage_id is None:
         return None
     stage = await db.scalar(
@@ -368,10 +369,25 @@ async def ensure_decision_gate_wake(db: AsyncSession, *, workflow: GroupWorkflow
     )
     if stage is None or stage.status != "awaiting_approval":
         return None
+    if not stage.requires_approval:
+        # Evidence already forced reconcile into awaiting_approval under the old
+        # OKR gate; complete now without human/DM wait.
+        result = await db.execute(select(GroupWorkflowItem).where(GroupWorkflowItem.stage_id == stage.id))
+        items = list(result.scalars().all())
+        if items and all(item.status == "done" for item in items):
+            transition = await _complete_stage(db, workflow=workflow, stage=stage, source="workflow")
+            return transition.leader_action
+        # Items incomplete: reopen active so the leader can finish evidence.
+        stage.status = "active"
+        workflow.status = "active"
+        workflow.version += 1
+        await db.flush()
+        return await _leader_action(db, workflow=workflow, stage=stage, kind="stage_activated")
     group = await db.scalar(select(Group).where(Group.id == workflow.group_id))
-    if group is not None and group.decision_maker_participant_id is None:
+    if group is not None:
         from app.services.group_decision.seed import ensure_group_decision_maker_from_group
 
+        # Creates DM when missing; also backfills cross-space grants on existing DMs.
         await ensure_group_decision_maker_from_group(
             db,
             group=group,
@@ -537,15 +553,12 @@ async def _reconcile(db: AsyncSession, *, workflow: GroupWorkflow, stage: GroupW
         return WorkflowTransition(workflow, stage, None, await _leader_action(db, workflow=workflow, stage=stage, kind="blocker"))
     if not items or any(item.status != "done" for item in items):
         return WorkflowTransition(workflow, stage, None, None)
-    needs_confirm = stage.requires_approval or await _workflow_okr_requires_human_confirm(
-        db, tenant_id=workflow.tenant_id
-    )
-    if needs_confirm:
+    # Only explicit approval stages gate; OKR project push must not block advancement.
+    if stage.requires_approval:
         stage.status, workflow.status = "awaiting_approval", "awaiting_approval"
         workflow.version += 1
         action = await _leader_action(db, workflow=workflow, stage=stage, kind="approval_required")
         await _decision_action(db, workflow=workflow, stage=stage, kind="approval_required")
-        # Optional OKR nudge while waiting; "arrival" events fire only after confirm.
         await _notify_okr(workflow, "approval_required", stage)
         return WorkflowTransition(workflow, stage, None, action)
     return await _complete_stage(db, workflow=workflow, stage=stage, source="workflow")
@@ -591,7 +604,7 @@ async def _complete_stage(db: AsyncSession, *, workflow: GroupWorkflow, stage: G
     workflow.version += 1
     await _event(db, workflow=workflow, event_type="stage_completed", source=source, actor_participant_id=actor_participant_id,
                  stage_id=stage.id, idempotency_key=f"stage:{stage.id}:completed")
-    confirmed = source in {"human", "decision_maker"}
+    confirmed = source in {"human", "decision_maker", "workflow"}
     await _notify_okr(workflow, "stage_completed", stage, confirmed=confirmed)
     next_result = await db.execute(select(GroupWorkflowStage).where(
         GroupWorkflowStage.workflow_id == workflow.id, GroupWorkflowStage.position == stage.position + 1,
