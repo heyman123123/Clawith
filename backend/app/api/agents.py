@@ -31,6 +31,7 @@ from app.models.participant import Participant
 from app.models.workspace import WorkspaceEditLock
 from app.services.okr_agent_hook import hook_new_agent
 from app.services.agent_manager import agent_manager
+from app.services.company_role_library import visible_role_templates
 from app.models.skill import Skill
 from app.services.resource_discovery import import_mcp_from_smithery
 from app.services.agent_runtime.persistence import enqueue_cancel
@@ -148,7 +149,9 @@ async def list_templates(
     from app.models.agent import AgentTemplate
 
     result = await db.execute(
-        select(AgentTemplate).order_by(AgentTemplate.is_builtin.desc(), AgentTemplate.created_at.asc())
+        select(AgentTemplate)
+        .where(visible_role_templates(current_user.tenant_id))
+        .order_by(AgentTemplate.is_builtin.desc(), AgentTemplate.created_at.asc())
     )
     templates = result.scalars().all()
     return [
@@ -451,6 +454,16 @@ async def create_agent(
                 and tenant.min_heartbeat_interval_minutes > default_heartbeat_interval
             ):
                 default_heartbeat_interval = tenant.min_heartbeat_interval_minutes
+
+    if data.template_id is not None:
+        template_result = await db.execute(
+            select(AgentTemplate).where(
+                AgentTemplate.id == data.template_id,
+                visible_role_templates(target_tenant_id),
+            )
+        )
+        if template_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Template not found")
 
     # Use a requested model only after an Active check. A stale deleted tenant
     # default is ignored without rewriting the historical Tenant reference.

@@ -39,10 +39,14 @@ _SYSTEM_PROMPT = """You design an evidence-driven lifecycle for one collaboratio
 Return exactly one JSON object and no Markdown. It must have name, source, stages.
 source must be \"ai\". Each stage has key, title, goal, requires_approval,
 acceptance_criteria, owner_participant_id and items. Each item has item_key, title,
-description and assignee_participant_id. Use only supplied participant UUIDs. Make
-stages sequential, make evidence concrete, and only use approval gates for human
-decision/release/acceptance moments. The group leader coordinates publicly; do not
-invent people or use conversational timestamps as progress."""
+description, acceptance_criteria, depends_on and assignee_participant_id.
+depends_on contains canonical task keys in the form \"stage_key.item_key\". Use only
+supplied participant UUIDs. Make stages sequential, allow independent tasks in the
+same active stage to run in parallel, and never depend on a task in a later stage.
+Every task must have concrete acceptance criteria and evidence requirements; chat
+messages, meeting notes, or timestamps are not delivery evidence. Only use approval
+gates for human decision/release/acceptance moments. The group leader coordinates
+publicly; do not invent people or use conversational timestamps as progress."""
 
 
 async def _scope_snapshot(

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from enum import Enum
 
+import httpx
+
 from .client import LLMError
 
 
@@ -33,6 +35,20 @@ def classify_error(error: Exception) -> FailoverErrorType:
     - Schema errors
     - Content policy violations
     """
+    # `httpx.ReadTimeout()` commonly has an empty string representation.  Do
+    # not rely on its message: doing so marks a real transport failure as
+    # unknown and prevents the durable runtime from retrying or failing over.
+    if isinstance(
+        error,
+        (
+            TimeoutError,
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.ProtocolError,
+        ),
+    ):
+        return FailoverErrorType.RETRYABLE
+
     error_msg = str(error).lower()
 
     # Non-retryable: authentication and authorization

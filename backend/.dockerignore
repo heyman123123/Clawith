@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+agent_templates/agency-*/
+agent_templates/AGENCY_AGENTS_ZH_LICENSE.md

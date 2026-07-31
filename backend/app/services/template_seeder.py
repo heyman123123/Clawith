@@ -18,6 +18,7 @@ from loguru import logger
 from sqlalchemy import select
 from app.database import async_session
 from app.models.agent import AgentTemplate
+from app.services.agency_role_sync import agency_role_template_root
 
 
 # ─── Legacy Python templates ────────────────────────────────────────
@@ -216,50 +217,52 @@ _REQUIRED_META_FIELDS = {"name", "description", "icon", "category"}
 
 
 def _load_folder_templates() -> list[dict]:
-    """Return a list of template dicts matching DEFAULT_TEMPLATES shape."""
-    if not _TEMPLATE_ROOT.exists():
-        return []
+    """Load bundled templates plus the downloaded external role cache."""
+    roots = [_TEMPLATE_ROOT, agency_role_template_root()]
 
     out: list[dict] = []
-    for slug_dir in sorted(p for p in _TEMPLATE_ROOT.iterdir() if p.is_dir()):
-        meta_path = slug_dir / "meta.yaml"
-        soul_path = slug_dir / "soul.md"
-
-        if not meta_path.exists():
-            logger.warning(f"[TemplateSeeder] {slug_dir.name}: no meta.yaml, skipping")
+    for root in roots:
+        if not root.exists():
             continue
-        if not soul_path.exists():
-            logger.warning(f"[TemplateSeeder] {slug_dir.name}: no soul.md, skipping")
-            continue
+        for slug_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+            meta_path = slug_dir / "meta.yaml"
+            soul_path = slug_dir / "soul.md"
 
-        try:
-            meta = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError as exc:
-            logger.error(f"[TemplateSeeder] {slug_dir.name}/meta.yaml parse error: {exc}")
-            continue
+            if not meta_path.exists():
+                logger.warning(f"[TemplateSeeder] {slug_dir.name}: no meta.yaml, skipping")
+                continue
+            if not soul_path.exists():
+                logger.warning(f"[TemplateSeeder] {slug_dir.name}: no soul.md, skipping")
+                continue
 
-        missing = _REQUIRED_META_FIELDS - meta.keys()
-        if missing:
-            logger.error(
-                f"[TemplateSeeder] {slug_dir.name}/meta.yaml missing fields: "
-                f"{sorted(missing)}, skipping"
-            )
-            continue
+            try:
+                meta = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+            except yaml.YAMLError as exc:
+                logger.error(f"[TemplateSeeder] {slug_dir.name}/meta.yaml parse error: {exc}")
+                continue
 
-        soul_template = soul_path.read_text(encoding="utf-8")
-        out.append({
-            "name": meta["name"],
-            "description": meta["description"],
-            "icon": meta["icon"],
-            "category": meta["category"],
-            "is_builtin": True,
-            "capability_bullets": meta.get("capability_bullets", []),
-            "soul_template": soul_template,
-            "default_skills": meta.get("default_skills", []),
-            "default_mcp_servers": meta.get("default_mcp_servers", []),
-            "default_autonomy_policy": meta.get("default_autonomy_policy", {}),
-        })
-        logger.debug(f"[TemplateSeeder] Loaded folder template: {meta['name']}")
+            missing = _REQUIRED_META_FIELDS - meta.keys()
+            if missing:
+                logger.error(
+                    f"[TemplateSeeder] {slug_dir.name}/meta.yaml missing fields: "
+                    f"{sorted(missing)}, skipping"
+                )
+                continue
+
+            soul_template = soul_path.read_text(encoding="utf-8")
+            out.append({
+                "name": meta["name"],
+                "description": meta["description"],
+                "icon": meta["icon"],
+                "category": meta["category"],
+                "is_builtin": True,
+                "capability_bullets": meta.get("capability_bullets", []),
+                "soul_template": soul_template,
+                "default_skills": meta.get("default_skills", []),
+                "default_mcp_servers": meta.get("default_mcp_servers", []),
+                "default_autonomy_policy": meta.get("default_autonomy_policy", {}),
+            })
+            logger.debug(f"[TemplateSeeder] Loaded folder template: {meta['name']}")
 
     return out
 
@@ -272,7 +275,7 @@ def _merged_templates() -> list[dict]:
     return list(by_name.values())
 
 
-async def seed_agent_templates():
+async def seed_agent_templates(*, preserve_missing_builtins: bool = False):
     """Insert default agent templates if they don't exist. Update stale ones."""
     templates = _merged_templates()
 
@@ -289,7 +292,7 @@ async def seed_agent_templates():
             )
             existing_builtins = result.scalars().all()
             for old in existing_builtins:
-                if old.name not in current_names:
+                if old.name not in current_names and not preserve_missing_builtins:
                     # Check if any agents still reference this template
                     ref_count = await db.execute(
                         select(func.count(Agent.id)).where(Agent.template_id == old.id)

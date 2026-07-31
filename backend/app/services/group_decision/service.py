@@ -459,6 +459,7 @@ async def approve_decision(
     *,
     decision_id: uuid.UUID,
     actor_participant_id: uuid.UUID,
+    note: str | None = None,
 ) -> GroupDecisionRequest:
     decision = await db.scalar(
         select(GroupDecisionRequest).where(GroupDecisionRequest.id == decision_id).with_for_update()
@@ -469,6 +470,9 @@ async def approve_decision(
     if decision.status != "pending_owner_confirm":
         raise GroupDecisionError("decision_not_pending", "Decision is not awaiting confirmation")
     decision.status = "approved"
+    approval_note = (note or "").strip()
+    if approval_note:
+        decision.summary = f"{decision.summary}\n确认说明：{approval_note}".strip()
     decision.approver_participant_id = actor_participant_id
     decision.decided_at = _now()
     await db.flush()

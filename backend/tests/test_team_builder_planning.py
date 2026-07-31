@@ -6,8 +6,58 @@ import uuid
 
 import pytest
 
+from app.services import agency_role_sync
+from app.services.agency_role_sync import agency_role_template_root, import_agency_roles
 from app.services.team_builder.errors import TeamBuilderError
-from app.services.team_builder.planning import fallback_team_plan, validate_team_plan
+from app.services.team_builder.planning import _role_catalog, fallback_team_plan, validate_team_plan
+
+
+def test_agency_agents_zh_roles_use_a_persistent_runtime_cache() -> None:
+    root = agency_role_template_root()
+
+    assert "agent_templates" not in str(root)
+    assert root.parent.name == "role_templates"
+    assert root.name == "agency-agents-zh"
+
+
+def test_agency_role_import_writes_to_runtime_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "agency-agents-zh"
+    role_file = source / "engineering" / "frontend.md"
+    role_file.parent.mkdir(parents=True)
+    (source / "LICENSE").write_text("MIT", encoding="utf-8")
+    role_file.write_text(
+        "---\nname: 前端开发者\ndescription: React 专家\nemoji: 💻\n---\n\n# Role\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(agency_role_sync, "_MINIMUM_ROLE_COUNT", 1)
+    output = tmp_path / "runtime" / "agency-agents-zh"
+
+    imported = import_agency_roles(source, output)
+
+    assert imported == 1
+    assert (output / "agency-engineering-frontend" / "meta.yaml").is_file()
+    assert "# Role" in (output / "agency-engineering-frontend" / "soul.md").read_text(encoding="utf-8")
+
+
+def test_role_catalog_exposes_real_template_ids_to_the_team_planner() -> None:
+    template_id = uuid.uuid4()
+    catalog = _role_catalog([
+        type("Template", (), {
+            "id": template_id,
+            "name": "前端开发者",
+            "description": "React 和性能优化专家",
+            "category": "engineering",
+            "capability_bullets": ["React", "性能"],
+        })(),
+    ])
+
+    assert catalog == [{
+        "template_id": str(template_id),
+        "name": "前端开发者",
+        "description": "React 和性能优化专家",
+        "category": "engineering",
+        "capabilities": ["React", "性能"],
+    }]
 
 
 def test_fallback_plan_has_one_new_leader_and_public_delegation() -> None:

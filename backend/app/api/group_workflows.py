@@ -16,10 +16,12 @@ from app.database import get_db
 from app.models.group import Group, GroupMember
 from app.models.group_workflow import (
     GroupWorkflow,
+    GroupWorkflowChangeRequest,
     GroupWorkflowDraft,
     GroupWorkflowEvent,
     GroupWorkflowItem,
     GroupWorkflowStage,
+    GroupWorkflowTaskDependency,
 )
 from app.models.user import User
 from app.services import group_chat_service
@@ -53,6 +55,13 @@ class BlockIn(BaseModel):
 class ItemPatchIn(BaseModel):
     status: str = Field(pattern=r"^(in_progress|unblock)$")
     expected_version: int | None = Field(default=None, ge=1)
+
+
+class ChangeRequestIn(BaseModel):
+    kind: str = Field(pattern=r"^(add|split|reconnect|acceptance)$")
+    target_item_id: uuid.UUID | None = None
+    after: dict = Field(default_factory=dict)
+    reason: str = Field(min_length=1, max_length=4000)
 
 
 def _workflow_error(exc: Exception) -> HTTPException:
@@ -100,6 +109,14 @@ async def _snapshot(db: AsyncSession, workflow: GroupWorkflow) -> dict:
     items = list((await db.execute(
         select(GroupWorkflowItem).where(GroupWorkflowItem.workflow_id == workflow.id).order_by(GroupWorkflowItem.created_at)
     )).scalars().all())
+    dependencies = list((await db.execute(
+        select(GroupWorkflowTaskDependency).where(GroupWorkflowTaskDependency.workflow_id == workflow.id)
+    )).scalars().all())
+    changes = list((await db.execute(
+        select(GroupWorkflowChangeRequest)
+        .where(GroupWorkflowChangeRequest.workflow_id == workflow.id, GroupWorkflowChangeRequest.status == "pending")
+        .order_by(GroupWorkflowChangeRequest.created_at.desc())
+    )).scalars().all())
     action = (await db.execute(
         select(GroupWorkflowEvent).where(
             GroupWorkflowEvent.workflow_id == workflow.id,
@@ -122,8 +139,17 @@ async def _snapshot(db: AsyncSession, workflow: GroupWorkflow) -> dict:
             {"id": str(item.id), "stage_id": str(item.stage_id), "item_key": item.item_key, "title": item.title, "description": item.description,
              "assignee_participant_id": str(item.assignee_participant_id) if item.assignee_participant_id else None,
              "status": item.status, "evidence": item.evidence, "blocked_reason": item.blocked_reason, "version": item.version,
-             "updated_at": item.updated_at}
+             "acceptance_criteria": item.acceptance_criteria, "started_at": item.started_at, "completed_at": item.completed_at,
+             "failed_at": item.failed_at, "failure_code": item.failure_code, "failure_summary": item.failure_summary,
+             "depends_on": [str(dep.predecessor_item_id) for dep in dependencies if dep.successor_item_id == item.id],
+             "blocked_by": [str(dep.predecessor_item_id) for dep in dependencies if dep.successor_item_id == item.id], "updated_at": item.updated_at}
             for item in items
+        ],
+        "graph_summary": {"ready": sum(item.status == "ready" for item in items), "blocked": sum(item.status in {"blocked", "failed"} for item in items)},
+        "pending_change_requests": [
+            {"id": str(change.id), "kind": change.kind, "target_item_id": str(change.target_item_id) if change.target_item_id else None,
+             "after": change.after, "impact": change.impact, "reason": change.reason, "created_at": change.created_at}
+            for change in changes
         ],
         "leader_next_action": ({"id": str(action.id), "kind": action.payload.get("kind"), "stage_id": str(action.stage_id) if action.stage_id else None,
                                 "item_id": str(action.item_id) if action.item_id else None, "payload": action.payload} if action else None),

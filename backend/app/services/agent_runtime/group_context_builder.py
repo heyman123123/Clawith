@@ -36,9 +36,9 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
     base = (
         "As group leader, advance only by SOP/evidence events. "
         "Never wait for heartbeat, cron, wall-clock time, or human/admin replies to take the next step. "
-        "Publicly assign work, chase evidence, resolve blockers. "
-        "When YOUR assigned workflow item is ready, immediately call group_workflow_submit_evidence — "
-        "do NOT invent a human approval gate. "
+        "The scheduler assigns ready tasks automatically; inspect the ready queue and resolve blockers or approved changes. "
+        "You may coordinate and resolve blockers, but never submit completion evidence for "
+        "a member's assigned item or treat a plan/meeting note as delivery. "
         "Members report to YOU; project-level sign-off goes only to the decision maker "
         "(call `at` then @ them). Never ask admin/humans/members to approve plans or stages. "
         "A short FYI to humans is OK only after you have already advanced via tools. "
@@ -73,7 +73,7 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
         )
         return (
             f"{base} Member progress: {actor} submitted evidence. "
-            f"Acknowledge, reassign next work, and chase remaining items.{dm_hint}"
+            f"Review only concrete blockers or acceptance exceptions; do not reassign already-scheduled work.{dm_hint}"
         )
     if kind == "decision_resolved":
         dtitle = str(action_payload.get("decision_title") or "decision").strip()
@@ -110,8 +110,8 @@ def _leader_workflow_instruction(action_payload: Mapping[str, object] | None) ->
             else ""
         )
         return (
-            f"{base} A stage just activated: distribute assignments now, then submit evidence on "
-            f"your own deliverable with group_workflow_submit_evidence so the stage can advance."
+            f"{base} A stage just activated: ready tasks will be dispatched automatically. Verify that execution "
+            f"evidence is task-bound before considering stage advancement."
             f"{dm_hint}"
         )
     if kind == "workflow_completed":
@@ -432,7 +432,7 @@ class GroupContextBuilder:
                 select(GroupWorkflowItem).where(
                     GroupWorkflowItem.workflow_id == workflow.id,
                     GroupWorkflowItem.assignee_participant_id == target_participant_id,
-                    GroupWorkflowItem.status.in_(("pending", "in_progress", "blocked", "awaiting_approval")),
+                    GroupWorkflowItem.status.in_(("ready", "in_progress", "blocked", "failed", "awaiting_approval")),
                 ).order_by(GroupWorkflowItem.updated_at.desc())
             )).scalars().all())
             leader_action = await db.scalar(select(GroupWorkflowEvent).where(
@@ -470,10 +470,10 @@ class GroupContextBuilder:
                     else "call `at` then @ the group leader"
                 )
                 instruction = (
-                    "Use structured workflow tools to record work, evidence, and blockers. "
-                    f"After you submit evidence, hit a blocker, or need a project decision, immediately {leader_at} "
-                    "with a short progress report. Do NOT @ the decision maker or humans for project sign-off — "
-                    "the leader escalates to the decision maker. "
+                    "Work only on your assigned ready or in-progress tasks. Use structured workflow tools to record "
+                    "evidence and blockers; do not start pending tasks or request repeat assignment. "
+                    f"After you hit a blocker or need a project decision, immediately {leader_at} with the task ID and a short report. "
+                    "Do NOT @ the decision maker or humans for project sign-off — the leader escalates to the decision maker. "
                     "When you @ anyone: call the `at` tool with participant_id first, then include "
                     "@DisplayName in the visible reply."
                 )
@@ -489,7 +489,8 @@ class GroupContextBuilder:
                 ],
                 "assigned_items": [
                     {"id": str(item.id), "title": item.title, "status": item.status,
-                     "blocked_reason": item.blocked_reason, "version": item.version}
+                     "blocked_reason": item.blocked_reason, "acceptance_criteria": item.acceptance_criteria,
+                     "version": item.version}
                     for item in assigned_items
                 ],
                 "leader_next_action": (

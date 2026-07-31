@@ -1,7 +1,7 @@
 export type WorkflowSource = 'default' | 'agile' | 'product_research' | 'ai';
 export type WorkflowStatus = 'active' | 'paused' | 'awaiting_approval' | 'completed';
 export type WorkflowStageStatus = 'pending' | 'active' | 'awaiting_approval' | 'completed' | 'blocked';
-export type WorkflowItemStatus = 'pending' | 'in_progress' | 'blocked' | 'awaiting_approval' | 'done';
+export type WorkflowItemStatus = 'pending' | 'ready' | 'in_progress' | 'blocked' | 'awaiting_approval' | 'done' | 'failed';
 
 export interface WorkflowStage {
     id: string;
@@ -27,6 +27,14 @@ export interface WorkflowItem {
     status: WorkflowItemStatus;
     evidence: Record<string, unknown>[];
     blocked_reason: string | null;
+    acceptance_criteria: string[];
+    started_at: string | null;
+    completed_at: string | null;
+    failed_at: string | null;
+    failure_code: string | null;
+    failure_summary: string | null;
+    depends_on: string[];
+    blocked_by: string[];
     version: number;
     updated_at: string;
 }
@@ -52,7 +60,19 @@ export interface GroupWorkflow {
     updated_at: string;
     stages: WorkflowStage[];
     items: WorkflowItem[];
+    graph_summary: { ready: number; blocked: number };
+    pending_change_requests: WorkflowChangeRequest[];
     leader_next_action: WorkflowLeaderAction | null;
+}
+
+export interface WorkflowChangeRequest {
+    id: string;
+    kind: 'add' | 'split' | 'reconnect' | 'acceptance';
+    target_item_id: string | null;
+    after: Record<string, unknown>;
+    impact: Record<string, unknown>;
+    reason: string;
+    created_at: string;
 }
 
 export interface WorkflowEvent {

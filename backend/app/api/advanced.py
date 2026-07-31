@@ -8,11 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
-from app.core.security import get_current_user, get_current_admin
+from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
-from app.models.agent import Agent, AgentTemplate
+from app.models.agent import AgentTemplate
 from app.models.user import User
 from app.services.collaboration import collaboration_service
+from app.services.company_role_library import visible_role_templates
 
 router = APIRouter(tags=["advanced"])
 
@@ -104,10 +105,11 @@ class TemplateOut(BaseModel):
 @router.get("/templates", response_model=list[TemplateOut])
 async def list_templates(
     category: str | None = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List available agent templates."""
-    query = select(AgentTemplate).order_by(AgentTemplate.name)
+    query = select(AgentTemplate).where(visible_role_templates(current_user.tenant_id)).order_by(AgentTemplate.name)
     if category:
         query = query.where(AgentTemplate.category == category)
     result = await db.execute(query)
@@ -115,9 +117,15 @@ async def list_templates(
 
 
 @router.get("/templates/{template_id}", response_model=TemplateOut)
-async def get_template(template_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_template(
+    template_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Get template details."""
-    result = await db.execute(select(AgentTemplate).where(AgentTemplate.id == template_id))
+    result = await db.execute(
+        select(AgentTemplate).where(AgentTemplate.id == template_id, visible_role_templates(current_user.tenant_id))
+    )
     template = result.scalar_one_or_none()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -140,6 +148,7 @@ async def create_template(
         default_skills=data.default_skills,
         default_autonomy_policy=data.default_autonomy_policy,
         created_by=current_user.id,
+        tenant_id=current_user.tenant_id,
     )
     db.add(template)
     await db.flush()
@@ -153,7 +162,9 @@ async def delete_template(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a template (admin or creator)."""
-    result = await db.execute(select(AgentTemplate).where(AgentTemplate.id == template_id))
+    result = await db.execute(
+        select(AgentTemplate).where(AgentTemplate.id == template_id, visible_role_templates(current_user.tenant_id))
+    )
     template = result.scalar_one_or_none()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")

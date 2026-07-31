@@ -200,6 +200,13 @@ class AgentTemplate(Base):
     # Talent Market card: 2-4 short capability bullets shown under the role
     capability_bullets: Mapped[list] = mapped_column(JSON, default=[])
     is_builtin: Mapped[bool] = mapped_column(default=False)
+    # Built-in templates are shared by every company.  Templates created from
+    # an intelligent-team plan belong to the company that created them, so a
+    # later one-sentence team request can reuse the persona without exposing
+    # company-specific roles to another tenant.
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

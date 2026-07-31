@@ -11,13 +11,14 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent import Agent
+from app.models.agent import Agent, AgentTemplate
 from app.models.user import User
 from app.services.agent_runtime.model_capabilities import (
     PlatformModelConfigurationError,
     resolve_multi_agent_planning_model,
 )
 from app.services.ai_monitoring import ai_interaction_scope
+from app.services.company_role_library import ensure_company_role_library, visible_role_templates
 from app.services.llm.client import LLMMessage
 from app.services.llm.single_step import complete_llm_once
 from app.services.team_builder.errors import TeamBuilderError
@@ -132,10 +133,11 @@ def build_team_sop(plan: TeamPlan) -> str:
             "2. **公开协作**：重要进展、阻塞、交付必须在群内公开同步，禁止只在私聊闭环。",
             "3. **@ 协议**：需要唤醒其他 Agent 时，必须先调用 `at` 工具传入其 participant_id，再在正文写可见 `@名字`；禁止只写 @ 名字。",
             "4. **证据推进**：完成工作后用工作流工具提交证据（submit_evidence 等），不要口头声称完成却不交证据。",
-            "5. **项目级拍板**：阶段审批与项目决策找群内**决策者**，不要把项目拍板推给人类管理员或普通成员。",
-            "6. **例外升级**：涉及对外沟通、外部部署、财务或不确定事项，由决策者私聊人类管理员确认后再执行。",
-            "7. **主动推进**：收到指令立即行动，禁止干等心跳或定时；阻塞要立刻公开说明并 @ 相关角色。",
-            "8. **本公告优先**：本 SOP 注入每位被 @ Agent 的上下文，所有成员必须优先遵守。",
+            "5. **开发交付不可替代**：开发/实现阶段必须由对应技术成员在群工作区 `代码/` 提交实际源码并附上验证结果；群主只能编排、核对和处理阻塞，不能以纪要或方案替成员标记完成。",
+            "6. **项目级拍板**：阶段审批与项目决策找群内**决策者**，不要把项目拍板推给人类管理员或普通成员。",
+            "7. **例外升级**：涉及对外沟通、外部部署、财务或不确定事项，由决策者私聊人类管理员确认后再执行。",
+            "8. **主动推进**：收到指令立即行动，禁止干等心跳或定时；阻塞要立刻公开说明并 @ 相关角色。",
+            "9. **本公告优先**：本 SOP 注入每位被 @ Agent 的上下文，所有成员必须优先遵守。",
             "",
             "## 阶段推进约定",
             "- 成员交付 → 群主核对与催证据 → 决策者对审批门拍板 → 决策结论公开 @ 群主继续编排。",
@@ -168,11 +170,37 @@ def workflow_from_preset(
     )
 
 
+_SOURCE_CODE_EVIDENCE_MARKER = "[evidence_policy:source_code]"
+_SOURCE_CODE_STAGE_RE = re.compile(
+    r"(开发|实现|构建|编码|build|implement|development)", re.IGNORECASE
+)
+_TECHNICAL_MEMBER_RE = re.compile(
+    r"(开发|工程|架构|前端|后端|全栈|测试|qa|devops|sre|engineer|developer|architect)",
+    re.IGNORECASE,
+)
+
+
+def _stage_requires_source_code(stage: TeamPlanWorkflowStage) -> bool:
+    return bool(_SOURCE_CODE_STAGE_RE.search(f"{stage.title}\n{stage.goal}"))
+
+
+def workflow_plan_requires_source_code(plan: object) -> bool:
+    """Whether a materialized workflow has at least one source-code deliverable."""
+    stages = getattr(plan, "stages", ())
+    return any(
+        _SOURCE_CODE_EVIDENCE_MARKER in item.description
+        for stage in stages
+        for item in stage.items
+    )
+
+
 def team_workflow_to_workflow_plan(
     workflow: TeamPlanWorkflow,
     *,
     goal: str,
     leader_participant_id: uuid.UUID | None,
+    members: list[TeamPlanMember] | None = None,
+    member_participant_ids: dict[str, uuid.UUID] | None = None,
 ):
     from app.services.group_workflow.contracts import WorkflowItemPlan, WorkflowPlan, WorkflowStagePlan
 
@@ -180,8 +208,49 @@ def team_workflow_to_workflow_plan(
     if source not in {"default", "agile", "product_research", "ai"}:
         source = "ai"
     stages: list[WorkflowStagePlan] = []
+    previous_item_refs: list[str] = []
     for stage in workflow.stages:
         criteria = ["决策者确认交付满足当前阶段目标"] if stage.requires_approval else []
+        items = [
+            WorkflowItemPlan(
+                item_key=f"{stage.key}_deliverable",
+                title=stage.title,
+                description=stage.goal or goal,
+                acceptance_criteria=[f"{stage.title}交付物已提交且可验证"],
+                depends_on=previous_item_refs,
+                assignee_participant_id=leader_participant_id,
+            )
+        ]
+        if members and member_participant_ids and _stage_requires_source_code(stage):
+            technical_members = [
+                member
+                for member in members
+                if not member.is_leader
+                and member.member_key in member_participant_ids
+                and _TECHNICAL_MEMBER_RE.search(
+                    f"{member.role_description}\n{member.responsibility}"
+                )
+            ]
+            if technical_members:
+                items = [
+                    WorkflowItemPlan(
+                        item_key=f"{stage.key}_code_{index}",
+                        title=f"{stage.title} · {member.name} 的源码交付",
+                        description=(
+                            f"{_SOURCE_CODE_EVIDENCE_MARKER}\n"
+                            f"{stage.goal or goal}\n"
+                            "必须在群工作区 `代码/` 写入实际可读源码；提交证据时提供 "
+                            "workspace_path 或 workspace_paths，并写明 test_result。"
+                        ),
+                        acceptance_criteria=[
+                            "群工作区代码目录中存在实际源码",
+                            "已提交非空 test_result",
+                        ],
+                        depends_on=previous_item_refs,
+                        assignee_participant_id=member_participant_ids[member.member_key],
+                    )
+                    for index, member in enumerate(technical_members, start=1)
+                ]
         stages.append(
             WorkflowStagePlan(
                 key=stage.key,
@@ -190,16 +259,10 @@ def team_workflow_to_workflow_plan(
                 requires_approval=stage.requires_approval,
                 acceptance_criteria=criteria,
                 owner_participant_id=leader_participant_id,
-                items=[
-                    WorkflowItemPlan(
-                        item_key=f"{stage.key}_deliverable",
-                        title=stage.title,
-                        description=stage.goal or goal,
-                        assignee_participant_id=leader_participant_id,
-                    )
-                ],
+                items=items,
             )
         )
+        previous_item_refs = [f"{stage.key}.{item.item_key}" for item in items]
     return WorkflowPlan(name=workflow.name, source=source, stages=stages)
 
 
@@ -212,8 +275,25 @@ template_id, skill_ids, and is_leader. source is existing or new; exactly one me
 template_id and skill_ids must be real UUIDs from the platform, or null / []. Never invent slug names.
 Each delegation has from_member_key, to_member_key, and instruction. The leader receives all human
 directions and delegates work publicly to team members. Use existing only with an ID in candidate_agents.
-Create new members when no candidate fits. Keep the team as small as possible.
-Do not invent workflow stages here; the platform attaches a workflow template separately."""
+The role_catalog contains installed expert templates, including agency-agents-zh roles. For every new
+member that matches a catalog role, use that role's real template_id so the new Agent receives its full
+specialist persona. Create a generic new member only when no catalog role fits. Choose 2-8 members,
+keep the team as small as possible, and make the leader an orchestration/project-management role when
+one is available. Do not invent workflow stages here; the platform attaches a workflow template separately."""
+
+
+def _role_catalog(templates: list[AgentTemplate]) -> list[dict[str, object]]:
+    """Serialize the installed roles compactly for one-sentence team composition."""
+    return [
+        {
+            "template_id": str(template.id),
+            "name": template.name,
+            "description": template.description,
+            "category": template.category,
+            "capabilities": list(template.capability_bullets or [])[:4],
+        }
+        for template in templates
+    ]
 
 
 _REVISE_SYSTEM_PROMPT = """You revise an existing Clawith team plan. Return exactly one JSON object, no Markdown.
@@ -458,6 +538,20 @@ async def generate_team_plan(
         {"id": str(agent.id), "name": agent.name, "role_description": agent.role_description}
         for agent in candidates_result.scalars().all()
     ]
+    # The company library contains all builtins plus this tenant's accumulated
+    # roles.  Refresh its KB index opportunistically; a storage outage must not
+    # prevent the user from receiving a team proposal.
+    try:
+        templates = await ensure_company_role_library(db, tenant_id=tenant_id)
+    except Exception:
+        templates_result = await db.execute(
+            select(AgentTemplate)
+            .where(visible_role_templates(tenant_id))
+            .order_by(AgentTemplate.category, AgentTemplate.name)
+            .limit(400)
+        )
+        templates = list(templates_result.scalars().all())
+    role_catalog = _role_catalog(templates[:400])
     try:
         model = await resolve_multi_agent_planning_model(db, tenant_id=tenant_id)
     except PlatformModelConfigurationError:
@@ -467,6 +561,7 @@ async def generate_team_plan(
         "requested_group_name": group_name,
         "constraints": constraints,
         "candidate_agents": candidates,
+        "role_catalog": role_catalog,
         "requesting_user": user.display_name,
     }
     try:

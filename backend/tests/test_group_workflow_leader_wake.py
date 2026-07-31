@@ -9,9 +9,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.services.agent_runtime.group_context_builder import _leader_workflow_instruction
 from app.services.group_workflow import daily_digest
+from app.services.group_workflow import worker
 from app.services.group_workflow.worker import build_leader_wake_content
 
 
@@ -88,6 +90,104 @@ def test_daily_digest_wake_is_confirmation_only() -> None:
     assert "日统计日报" in content
     assert "不驱动阶段推进" in content
     assert "Demo" in content
+
+
+@pytest.mark.asyncio
+async def test_action_claims_lock_only_event_rows_when_session_is_outer_joined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements = []
+
+    @asynccontextmanager
+    async def session_factory():
+        db = SimpleNamespace()
+
+        @asynccontextmanager
+        async def begin():
+            yield
+
+        async def execute(statement):
+            statements.append(statement)
+            return SimpleNamespace(first=lambda: None)
+
+        db.begin = begin
+        db.execute = execute
+        yield db
+
+    monkeypatch.setattr(worker, "async_session", session_factory)
+
+    assert await worker._claim_leader_action() is None
+    assert await worker._claim_decision_action() is None
+
+    sql = [
+        str(statement.compile(dialect=postgresql.dialect()))
+        for statement in statements
+    ]
+    assert len(sql) == 2
+    assert all("FOR UPDATE OF group_workflow_events SKIP LOCKED" in statement for statement in sql)
+
+
+@pytest.mark.asyncio
+async def test_decision_action_executes_service_without_public_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Approval gates are executed by the worker, never echoed as a DM prompt."""
+    event_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    stage_id = uuid.uuid4()
+    decision_maker_id = uuid.uuid4()
+    event = SimpleNamespace(id=event_id, stage_id=stage_id)
+    workflow = SimpleNamespace(id=workflow_id, group_id=group_id)
+    group = SimpleNamespace(decision_maker_participant_id=decision_maker_id)
+    db = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[event, workflow, group]),
+    )
+
+    @asynccontextmanager
+    async def session_factory():
+        @asynccontextmanager
+        async def begin():
+            yield
+
+        db.begin = begin
+        yield db
+
+    monkeypatch.setattr(worker, "async_session", session_factory)
+    monkeypatch.setattr(
+        worker,
+        "_claim_decision_action",
+        AsyncMock(
+            return_value=(
+                event_id,
+                uuid.uuid4(),
+                decision_maker_id,
+                uuid.uuid4(),
+                {"kind": "approval_required", "stage_title": "技术评审"},
+            )
+        ),
+    )
+    settle = AsyncMock()
+    monkeypatch.setattr(worker, "_settle", settle)
+    apply = AsyncMock()
+    from app.services.group_decision import service as decision_service
+
+    monkeypatch.setattr(decision_service, "apply_routine_decision", apply)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(worker.group_message_service, "enqueue_group_message", enqueue)
+
+    assert await worker.dispatch_decision_actions_once() is True
+
+    apply.assert_awaited_once_with(
+        db,
+        group_id=group_id,
+        title="阶段「技术评审」常规确认",
+        summary="阶段「技术评审」证据已齐，系统已自动执行常规决策并推进后续工作。",
+        workflow_id=workflow_id,
+        stage_id=stage_id,
+    )
+    enqueue.assert_not_awaited()
+    settle.assert_awaited_once_with(event_id, dispatched=True)
 
 
 @pytest.mark.asyncio
@@ -201,7 +301,7 @@ def test_leader_instruction_pings_decision_maker_on_approval() -> None:
     assert "Do NOT ask admin" in text
 
 
-def test_leader_instruction_stage_activated_requires_evidence_tool() -> None:
+def test_leader_instruction_stage_activated_relies_on_ready_task_dispatch() -> None:
     text = _leader_workflow_instruction({"kind": "stage_activated"})
-    assert "group_workflow_submit_evidence" in text
-    assert "human/admin" in text or "admin/humans" in text
+    assert "dispatched automatically" in text
+    assert "task-bound" in text

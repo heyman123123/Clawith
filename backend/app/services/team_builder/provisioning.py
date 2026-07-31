@@ -10,17 +10,26 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import can_use_agent
-from app.models.agent import Agent, AgentPermission
+from app.models.agent import Agent, AgentPermission, AgentTemplate
 from app.models.team_builder import TeamBuildDraft, TeamProvisionJob, TeamProvisionMember
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import group_chat_service, group_file_service, group_message_service
 from app.services.agent_manager import agent_manager
+from app.services.company_role_library import (
+    get_or_create_company_role_template,
+    visible_role_templates,
+)
 from app.services.participant_identity import (
     get_or_create_agent_participant,
     get_or_create_user_participant,
 )
-from app.services.team_builder.planning import TeamPlanMember, build_team_sop, validate_team_plan
+from app.services.team_builder.planning import (
+    TeamPlanMember,
+    build_team_sop,
+    validate_team_plan,
+    workflow_plan_requires_source_code,
+)
 
 logger = logging.getLogger(__name__)
 _READY_AGENT_STATUSES = frozenset({"running", "idle"})
@@ -38,7 +47,8 @@ def _leader_instructions(role: TeamPlanMember, goal: str) -> tuple[str, str]:
         return "", ""
     personality = (
         "你是这个群的群主和团队编排者：公开澄清目标、@ 分派任务、催证据、处理阻塞。"
-        "用群工作流工具推进阶段；你负责的工作项完成后立刻 submit_evidence，禁止干等。"
+        "用群工作流工具推进阶段；只能由工作项受让人提交其完成证据，"
+        "你不得用纪要、方案或成员转述替成员标记完成。"
         "项目级计划/阶段确认只交给群内「决策者」Agent（先 at 再 @），"
         "禁止让 admin/人类做项目拍板或「等人类确认后再推进」。"
         "可向人类简短同步进展（仅告知，不阻塞推进）。"
@@ -133,10 +143,11 @@ async def _resolve_members(
     draft: TeamBuildDraft,
     user: User,
     members: list[TeamProvisionMember],
-) -> tuple[list[uuid.UUID], uuid.UUID]:
+) -> tuple[list[uuid.UUID], uuid.UUID, dict[str, uuid.UUID]]:
     plan = validate_team_plan(draft.reviewed_plan)
     specs = {member.member_key: member for member in plan.members}
     participant_ids: list[uuid.UUID] = []
+    member_participant_ids: dict[str, uuid.UUID] = {}
     leader_participant_id: uuid.UUID | None = None
 
     for record in members:
@@ -159,6 +170,31 @@ async def _resolve_members(
                     "team_existing_agent_unavailable", f"Existing agent for {role.name} is unavailable"
                 )
         elif agent is None:
+            # A blank or no-longer-visible template means the planner has found
+            # a genuinely new role. Persist the persona before the Agent is
+            # created, then record the resolved template in the durable member
+            # spec so retries cannot create a different role.
+            if role.template_id is not None:
+                template_result = await db.execute(
+                    select(AgentTemplate).where(
+                        AgentTemplate.id == role.template_id,
+                        visible_role_templates(job.tenant_id),
+                    )
+                )
+                if template_result.scalar_one_or_none() is None:
+                    role = role.model_copy(update={"template_id": None})
+            if role.template_id is None:
+                template = await get_or_create_company_role_template(
+                    db,
+                    tenant_id=job.tenant_id,
+                    creator_id=user.id,
+                    name=role.name,
+                    role_description=role.role_description,
+                    responsibility=role.responsibility,
+                )
+                role = role.model_copy(update={"template_id": template.id})
+                record.role_spec = role.model_dump(mode="json")
+                await db.flush()
             agent, participant_id = await _new_agent(db, tenant_id=job.tenant_id, creator=user, role=role)
             record.agent_id = agent.id
             record.participant_id = participant_id
@@ -183,12 +219,13 @@ async def _resolve_members(
         record.error_code = None
         record.error_message = None
         participant_ids.append(record.participant_id)
+        member_participant_ids[role.member_key] = record.participant_id
         if role.is_leader:
             leader_participant_id = record.participant_id
 
     if leader_participant_id is None:
         raise TeamProvisioningError("team_leader_missing", "Approved team has no provisioned leader", retryable=False)
-    return participant_ids, leader_participant_id
+    return participant_ids, leader_participant_id, member_participant_ids
 
 
 def _team_documents(plan: dict) -> tuple[str, str]:
@@ -213,7 +250,7 @@ async def provision_job(db: AsyncSession, *, job_id: uuid.UUID) -> TeamProvision
     job.status = "validating"
     draft, user, members = await _load_scope(db, job)
     try:
-        participant_ids, leader_participant_id = await _resolve_members(
+        participant_ids, leader_participant_id, member_participant_ids = await _resolve_members(
             db, job=job, draft=draft, user=user, members=members
         )
     except TeamProvisioningError as exc:
@@ -235,6 +272,8 @@ async def provision_job(db: AsyncSession, *, job_id: uuid.UUID) -> TeamProvision
                 plan.workflow,
                 goal=plan.goal,
                 leader_participant_id=leader_participant_id,
+                members=plan.members,
+                member_participant_ids=member_participant_ids,
             )
         group = await group_chat_service.create_group(
             db,
@@ -278,6 +317,21 @@ async def provision_job(db: AsyncSession, *, job_id: uuid.UUID) -> TeamProvision
             content=brief,
             require_absent=True,
         )
+        if workflow_plan is not None and workflow_plan_requires_source_code(workflow_plan):
+            await group_file_service.write_workspace_file(
+                db,
+                tenant_id=job.tenant_id,
+                group_id=group.id,
+                actor_participant_id=creator.id,
+                path="代码/README.md",
+                content=(
+                    "# 代码工作区\n\n"
+                    "开发阶段的实际源码必须存放在此目录。每位受让技术成员须在完成时提交：\n"
+                    "1. `代码/` 下的源码路径；\n2. 可复核的验证结果；\n"
+                    "群主仅负责分派、核对和处理阻塞，不能代成员提交完成证据。\n"
+                ),
+                require_absent=True,
+            )
         await group_file_service.write_workspace_file(
             db,
             tenant_id=job.tenant_id,

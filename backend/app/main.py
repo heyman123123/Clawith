@@ -260,10 +260,27 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[startup] Atlassian tools seed failed: {e}")
 
+        agency_roles_ready = False
         try:
-            await seed_agent_templates()
+            from app.services.agency_role_sync import ensure_agency_role_templates
+
+            agency_roles_ready = await ensure_agency_role_templates()
+        except Exception as e:
+            logger.warning(f"[startup] External agency role sync failed: {e}")
+
+        try:
+            # If GitHub is temporarily unavailable before the external cache
+            # exists, keep prior builtins rather than deleting their personas.
+            await seed_agent_templates(preserve_missing_builtins=not agency_roles_ready)
         except Exception as e:
             logger.warning(f"[startup] Agent templates seed failed: {e}")
+
+        try:
+            from app.services.company_role_library import seed_company_role_libraries
+
+            await seed_company_role_libraries()
+        except Exception as e:
+            logger.warning(f"[startup] Company role knowledge-base seed failed: {e}")
 
         try:
             from app.services.skill_seeder import push_default_skills_to_existing_agents, seed_skills

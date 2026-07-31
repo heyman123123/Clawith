@@ -6,18 +6,33 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.group import Group, GroupMember
-from app.models.group_workflow import GroupWorkflow, GroupWorkflowEvent, GroupWorkflowItem, GroupWorkflowStage
+from app.models.group_workflow import (
+    GroupWorkflow,
+    GroupWorkflowChangeRequest,
+    GroupWorkflowEvent,
+    GroupWorkflowItem,
+    GroupWorkflowStage,
+    GroupWorkflowTaskDependency,
+)
 from app.models.participant import Participant
+from app.services import group_file_service
 from app.services.group_workflow.contracts import WorkflowPlan
 from app.services.group_workflow.templates import preset_workflow
 
 logger = logging.getLogger(__name__)
+
+_SOURCE_CODE_EVIDENCE_MARKER = "[evidence_policy:source_code]"
+_SOURCE_CODE_EXTENSIONS = frozenset({
+    ".c", ".cc", ".cs", ".css", ".go", ".html", ".java", ".js", ".jsx",
+    ".kt", ".php", ".py", ".rb", ".rs", ".sh", ".sql", ".ts", ".tsx",
+})
 
 
 async def _notify_okr(
@@ -69,10 +84,73 @@ class WorkflowTransition:
     stage: GroupWorkflowStage
     next_stage: GroupWorkflowStage | None
     leader_action: GroupWorkflowEvent | None
+    ready_items: tuple[GroupWorkflowItem, ...] = ()
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _evidence_workspace_paths(evidence: dict) -> list[str]:
+    values: list[object] = [evidence.get("workspace_path")]
+    multiple = evidence.get("workspace_paths")
+    if isinstance(multiple, list):
+        values.extend(multiple)
+    paths: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        path = value.strip().replace("\\", "/").removeprefix("workspace/")
+        if path:
+            paths.append(path)
+    return list(dict.fromkeys(paths))
+
+
+async def _validate_source_code_evidence(
+    db: AsyncSession,
+    *,
+    workflow: GroupWorkflow,
+    item: GroupWorkflowItem,
+    actor_participant_id: uuid.UUID,
+    evidence: dict,
+) -> None:
+    if _SOURCE_CODE_EVIDENCE_MARKER not in (getattr(item, "description", "") or ""):
+        return
+    paths = _evidence_workspace_paths(evidence)
+    code_paths = [
+        path for path in paths
+        if path.startswith("代码/") and PurePosixPath(path).suffix.lower() in _SOURCE_CODE_EXTENSIONS
+    ]
+    if not code_paths:
+        raise GroupWorkflowServiceError(
+            "workflow_source_code_evidence_required",
+            "This development item requires a source file under 代码/ in workspace_path or workspace_paths",
+        )
+    test_result = evidence.get("test_result")
+    if not isinstance(test_result, str) or not test_result.strip():
+        raise GroupWorkflowServiceError(
+            "workflow_test_result_required",
+            "This development item requires a non-empty test_result",
+        )
+    for path in code_paths:
+        try:
+            value = await group_file_service.read_workspace_file(
+                db,
+                tenant_id=workflow.tenant_id,
+                group_id=workflow.group_id,
+                actor_participant_id=actor_participant_id,
+                path=path,
+            )
+        except group_file_service.GroupFileServiceError as exc:
+            raise GroupWorkflowServiceError(
+                "workflow_source_code_missing",
+                f"Required source evidence is unavailable: {path}",
+            ) from exc
+        if len(value.content.strip()) < 20:
+            raise GroupWorkflowServiceError(
+                "workflow_source_code_invalid",
+                f"Required source evidence is empty or too short: {path}",
+            )
 
 
 async def _event(
@@ -111,6 +189,121 @@ async def _event(
         raise
 
 
+async def _queue_ready_item(
+    db: AsyncSession,
+    *,
+    workflow: GroupWorkflow,
+    stage: GroupWorkflowStage,
+    item: GroupWorkflowItem,
+) -> GroupWorkflowEvent:
+    """Create the idempotent dispatch record consumed by the task worker."""
+    return await _event(
+        db,
+        workflow=workflow,
+        event_type="task_ready",
+        source="workflow",
+        stage_id=stage.id,
+        item_id=item.id,
+        idempotency_key=f"item:{item.id}:ready:{item.version}",
+        payload={
+            "task_key": item.item_key,
+            "task_title": item.title,
+            "assignee_participant_id": str(item.assignee_participant_id) if item.assignee_participant_id else None,
+            "acceptance_criteria": item.acceptance_criteria or [],
+        },
+        dispatch=True,
+    )
+
+
+async def _refresh_ready_items(
+    db: AsyncSession,
+    *,
+    workflow: GroupWorkflow,
+    stage_ids: set[uuid.UUID] | None = None,
+) -> tuple[GroupWorkflowItem, ...]:
+    """Mark active-stage pending tasks ready only when every dependency is accepted."""
+    stages = list(
+        (
+            await db.execute(
+                select(GroupWorkflowStage).where(GroupWorkflowStage.workflow_id == workflow.id)
+            )
+        ).scalars().all()
+    )
+    active_stage_ids = {
+        stage.id for stage in stages if stage.status == "active" and (stage_ids is None or stage.id in stage_ids)
+    }
+    if not active_stage_ids:
+        return ()
+    items = list(
+        (
+            await db.execute(
+                select(GroupWorkflowItem).where(
+                    GroupWorkflowItem.workflow_id == workflow.id,
+                    GroupWorkflowItem.stage_id.in_(active_stage_ids),
+                    GroupWorkflowItem.status == "pending",
+                )
+            )
+        ).scalars().all()
+    )
+    if not items:
+        return ()
+    dependencies = list(
+        (
+            await db.execute(
+                select(GroupWorkflowTaskDependency).where(GroupWorkflowTaskDependency.workflow_id == workflow.id)
+            )
+        ).scalars().all()
+    )
+    all_items = list(
+        (
+            await db.execute(
+                select(GroupWorkflowItem).where(GroupWorkflowItem.workflow_id == workflow.id)
+            )
+        ).scalars().all()
+    )
+    by_id = {item.id: item for item in all_items}
+    predecessors: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for dependency in dependencies:
+        predecessors.setdefault(dependency.successor_item_id, []).append(dependency.predecessor_item_id)
+    stage_by_id = {stage.id: stage for stage in stages}
+    ready_items: list[GroupWorkflowItem] = []
+    for item in items:
+        predecessor_ids = predecessors.get(item.id, [])
+        if all(by_id.get(predecessor_id) is not None and by_id[predecessor_id].status == "done" for predecessor_id in predecessor_ids):
+            item.status = "ready"
+            item.blocked_reason = None
+            item.version += 1
+            ready_items.append(item)
+            await _queue_ready_item(db, workflow=workflow, stage=stage_by_id[item.stage_id], item=item)
+    if ready_items:
+        workflow.version += 1
+    return tuple(ready_items)
+
+
+async def _dependency_block_reason(
+    db: AsyncSession,
+    *,
+    workflow_id: uuid.UUID,
+    item_id: uuid.UUID,
+) -> str | None:
+    rows = list(
+        (
+            await db.execute(
+                select(GroupWorkflowTaskDependency, GroupWorkflowItem)
+                .join(GroupWorkflowItem, GroupWorkflowItem.id == GroupWorkflowTaskDependency.predecessor_item_id)
+                .where(
+                    GroupWorkflowTaskDependency.workflow_id == workflow_id,
+                    GroupWorkflowTaskDependency.successor_item_id == item_id,
+                )
+            )
+        ).all()
+    )
+    failed = [item.title for _dependency, item in rows if item.status in {"blocked", "failed"}]
+    if failed:
+        return f"等待前置任务恢复：{'、'.join(failed[:3])}"
+    return None
+
+
 async def create_workflow(
     db: AsyncSession, *, tenant_id: uuid.UUID, group_id: uuid.UUID,
     leader_participant_id: uuid.UUID | None, plan: WorkflowPlan,
@@ -139,17 +332,35 @@ async def create_workflow(
         db.add(stage)
         stages.append(stage)
     await db.flush()
+    items_by_key: dict[str, GroupWorkflowItem] = {}
     for stage, stage_plan in zip(stages, plan.stages, strict=True):
         for item_plan in stage_plan.items:
-            db.add(GroupWorkflowItem(
+            item = GroupWorkflowItem(
                 workflow_id=workflow.id, stage_id=stage.id, item_key=item_plan.item_key,
                 title=item_plan.title, description=item_plan.description,
+                acceptance_criteria=item_plan.acceptance_criteria,
                 assignee_participant_id=item_plan.assignee_participant_id or stage.owner_participant_id,
-            ))
+            )
+            db.add(item)
+            items_by_key[f"{stage_plan.key}.{item_plan.item_key}"] = item
+    await db.flush()
+    for stage_plan in plan.stages:
+        for item_plan in stage_plan.items:
+            successor = items_by_key[f"{stage_plan.key}.{item_plan.item_key}"]
+            for dependency_key in item_plan.depends_on:
+                db.add(
+                    GroupWorkflowTaskDependency(
+                        workflow_id=workflow.id,
+                        predecessor_item_id=items_by_key[dependency_key].id,
+                        successor_item_id=successor.id,
+                    )
+                )
+    await db.flush()
     workflow.current_stage_id = stages[0].id
     await _event(db, workflow=workflow, event_type="workflow_created", source="system",
                  idempotency_key="workflow:created", stage_id=stages[0].id,
                  payload={"source": plan.source})
+    await _refresh_ready_items(db, workflow=workflow, stage_ids={stages[0].id})
     await _leader_action(db, workflow=workflow, stage=stages[0], kind="stage_activated")
     return workflow
 
@@ -446,12 +657,14 @@ async def _locked_item(db: AsyncSession, item_id: uuid.UUID) -> tuple[GroupWorkf
 
 async def start_item(db: AsyncSession, *, item_id: uuid.UUID, actor_participant_id: uuid.UUID, expected_version: int | None = None) -> WorkflowTransition:
     workflow, stage, item = await _locked_item(db, item_id)
-    if item.assignee_participant_id not in {None, actor_participant_id, workflow.leader_participant_id}:
-        raise GroupWorkflowServiceError("workflow_item_access_denied", "Only the assignee or group leader can start this item")
+    if item.assignee_participant_id != actor_participant_id:
+        raise GroupWorkflowServiceError("workflow_item_access_denied", "Only the assigned member can start this item")
     if expected_version is not None and item.version != expected_version:
         raise GroupWorkflowServiceError("workflow_version_conflict", "Workflow item has changed")
-    if item.status == "pending":
-        item.status, item.version = "in_progress", item.version + 1
+    if item.status != "ready":
+        raise GroupWorkflowServiceError("workflow_item_not_ready", "Task is waiting for dependency completion")
+    if item.status == "ready":
+        item.status, item.started_at, item.version = "in_progress", _now(), item.version + 1
         workflow.version += 1
         await _event(db, workflow=workflow, event_type="item_started", source="agent", actor_participant_id=actor_participant_id,
                      stage_id=stage.id, item_id=item.id, idempotency_key=f"item:{item.id}:started:{item.version}")
@@ -460,44 +673,47 @@ async def start_item(db: AsyncSession, *, item_id: uuid.UUID, actor_participant_
 
 async def submit_evidence(db: AsyncSession, *, item_id: uuid.UUID, actor_participant_id: uuid.UUID, evidence: dict, expected_version: int | None = None) -> WorkflowTransition:
     workflow, stage, item = await _locked_item(db, item_id)
-    if item.assignee_participant_id not in {actor_participant_id, workflow.leader_participant_id}:
-        raise GroupWorkflowServiceError("workflow_item_access_denied", "Only the assignee or group leader can submit evidence")
+    if item.assignee_participant_id is not None and item.assignee_participant_id != actor_participant_id:
+        raise GroupWorkflowServiceError("workflow_item_access_denied", "Only the assigned member can submit completion evidence")
     if expected_version is not None and item.version != expected_version:
         raise GroupWorkflowServiceError("workflow_version_conflict", "Workflow item has changed")
     if not evidence:
         raise GroupWorkflowServiceError("workflow_evidence_invalid", "Evidence must not be empty")
+    if item.status not in {"ready", "in_progress", "awaiting_approval"}:
+        raise GroupWorkflowServiceError("workflow_item_not_ready", "Task is not ready for evidence submission")
+    await _validate_source_code_evidence(
+        db,
+        workflow=workflow,
+        item=item,
+        actor_participant_id=actor_participant_id,
+        evidence=evidence,
+    )
     newly_done = False
     if item.status != "done":
         item.evidence = [*(item.evidence or []), evidence]
-        item.status, item.blocked_reason, item.version = "done", None, item.version + 1
+        item.status, item.blocked_reason, item.completed_at, item.version = "done", None, _now(), item.version + 1
+        if getattr(item, "started_at", None) is None:
+            item.started_at = _now()
+        item.failed_at, item.failure_code, item.failure_summary = None, None, None
         workflow.version += 1
         newly_done = True
         await _event(db, workflow=workflow, event_type="evidence_submitted", source="agent", actor_participant_id=actor_participant_id,
                      stage_id=stage.id, item_id=item.id, payload=evidence, idempotency_key=f"item:{item.id}:evidence:{item.version}")
+    ready_items = await _refresh_ready_items(db, workflow=workflow, stage_ids={stage.id}) if newly_done else ()
     transition = await _reconcile(db, workflow=workflow, stage=stage)
-    # Closed loop: partial completion still wakes the leader (stage-gate wakes
-    # already cover the all-done → approval_required path).
-    if newly_done and transition.leader_action is None:
-        actor = await db.scalar(select(Participant).where(Participant.id == actor_participant_id))
-        action = await _leader_action(
-            db,
-            workflow=workflow,
-            stage=stage,
-            kind="member_progress",
-            item=item,
-            extra_payload={
-                "actor_participant_id": str(actor_participant_id),
-                "actor_display_name": actor.display_name if actor is not None else None,
-            },
-        )
-        return WorkflowTransition(workflow, stage, transition.next_stage, action)
-    return transition
+    return WorkflowTransition(
+        transition.workflow,
+        transition.stage,
+        transition.next_stage,
+        transition.leader_action,
+        (*ready_items, *getattr(transition, "ready_items", ())),
+    )
 
 
 async def set_blocked(db: AsyncSession, *, item_id: uuid.UUID, actor_participant_id: uuid.UUID, reason: str) -> WorkflowTransition:
     workflow, stage, item = await _locked_item(db, item_id)
-    if item.assignee_participant_id not in {actor_participant_id, workflow.leader_participant_id}:
-        raise GroupWorkflowServiceError("workflow_item_access_denied", "Only the assignee or group leader can block this item")
+    if item.assignee_participant_id != actor_participant_id:
+        raise GroupWorkflowServiceError("workflow_item_access_denied", "Only the assigned member can block this item")
     if not reason.strip():
         raise GroupWorkflowServiceError("workflow_block_reason_invalid", "Block reason must not be empty")
     item.status, item.blocked_reason, item.version = "blocked", reason.strip(), item.version + 1
@@ -516,12 +732,12 @@ async def clear_blocked(
     expected_version: int | None = None,
 ) -> WorkflowTransition:
     workflow, stage, item = await _locked_item(db, item_id)
-    if item.assignee_participant_id not in {actor_participant_id, workflow.leader_participant_id}:
-        raise GroupWorkflowServiceError("workflow_item_access_denied", "Only the assignee or group leader can unblock this item")
+    if item.assignee_participant_id != actor_participant_id:
+        raise GroupWorkflowServiceError("workflow_item_access_denied", "Only the assigned member can unblock this item")
     if expected_version is not None and item.version != expected_version:
         raise GroupWorkflowServiceError("workflow_version_conflict", "Workflow item has changed")
     if item.status == "blocked":
-        item.status, item.blocked_reason, item.version = "in_progress", None, item.version + 1
+        item.status, item.blocked_reason, item.version = "ready", None, item.version + 1
         workflow.version += 1
         await _event(
             db, workflow=workflow, event_type="item_unblocked", source="agent",
@@ -529,6 +745,327 @@ async def clear_blocked(
             idempotency_key=f"item:{item.id}:unblocked:{item.version}",
         )
     return await _reconcile(db, workflow=workflow, stage=stage)
+
+
+async def retry_item(
+    db: AsyncSession,
+    *,
+    item_id: uuid.UUID,
+    actor_participant_id: uuid.UUID,
+    expected_version: int | None = None,
+) -> WorkflowTransition:
+    """A leader explicitly restarts failed or blocked work; no automatic reruns."""
+    workflow, stage, item = await _locked_item(db, item_id)
+    if workflow.leader_participant_id != actor_participant_id:
+        raise GroupWorkflowServiceError("workflow_retry_denied", "Only the group leader can retry failed work")
+    if expected_version is not None and item.version != expected_version:
+        raise GroupWorkflowServiceError("workflow_version_conflict", "Workflow item has changed")
+    if item.status not in {"blocked", "failed"}:
+        raise GroupWorkflowServiceError("workflow_retry_invalid", "Only blocked or failed tasks can be retried")
+    item.status, item.blocked_reason, item.failure_code, item.failure_summary = "pending", None, None, None
+    item.failed_at = None
+    item.version += 1
+    workflow.version += 1
+    await _event(
+        db,
+        workflow=workflow,
+        event_type="item_retry_requested",
+        source="agent",
+        actor_participant_id=actor_participant_id,
+        stage_id=stage.id,
+        item_id=item.id,
+        idempotency_key=f"item:{item.id}:retry:{item.version}",
+    )
+    ready_items = await _refresh_ready_items(db, workflow=workflow, stage_ids={stage.id})
+    return WorkflowTransition(workflow, stage, None, None, ready_items)
+
+
+async def _change_impact(
+    db: AsyncSession,
+    *,
+    workflow_id: uuid.UUID,
+    target_item_id: uuid.UUID | None,
+) -> dict:
+    if target_item_id is None:
+        return {"target_item_id": None, "affected_item_ids": [], "ready_item_ids": []}
+    dependencies = list(
+        (
+            await db.execute(
+                select(GroupWorkflowTaskDependency).where(GroupWorkflowTaskDependency.workflow_id == workflow_id)
+            )
+        ).scalars().all()
+    )
+    successors: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for dependency in dependencies:
+        successors.setdefault(dependency.predecessor_item_id, []).append(dependency.successor_item_id)
+    affected: set[uuid.UUID] = set()
+    queue = list(successors.get(target_item_id, []))
+    while queue:
+        item_id = queue.pop()
+        if item_id in affected:
+            continue
+        affected.add(item_id)
+        queue.extend(successors.get(item_id, []))
+    items = list(
+        (
+            await db.execute(
+                select(GroupWorkflowItem).where(GroupWorkflowItem.id.in_(affected))
+            )
+        ).scalars().all()
+    ) if affected else []
+    return {
+        "target_item_id": str(target_item_id),
+        "affected_item_ids": [str(item_id) for item_id in sorted(affected, key=str)],
+        "ready_item_ids": [str(item.id) for item in items if item.status == "ready"],
+    }
+
+
+async def request_task_change(
+    db: AsyncSession,
+    *,
+    workflow_id: uuid.UUID,
+    requester_participant_id: uuid.UUID,
+    kind: str,
+    target_item_id: uuid.UUID | None,
+    after: dict,
+    reason: str,
+) -> GroupWorkflowChangeRequest:
+    """Record a proposed DAG change; only the group leader may confirm it later."""
+    if kind not in {"add", "split", "reconnect", "acceptance"}:
+        raise GroupWorkflowServiceError("workflow_change_kind_invalid", "Unsupported workflow task change")
+    if not reason.strip() or not isinstance(after, dict):
+        raise GroupWorkflowServiceError("workflow_change_invalid", "Change reason and payload are required")
+    workflow = await db.scalar(select(GroupWorkflow).where(GroupWorkflow.id == workflow_id).with_for_update())
+    if workflow is None:
+        raise GroupWorkflowServiceError("workflow_not_found", "Workflow was not found")
+    target = None
+    if target_item_id is not None:
+        target = await db.scalar(select(GroupWorkflowItem).where(GroupWorkflowItem.id == target_item_id).with_for_update())
+        if target is None or target.workflow_id != workflow.id:
+            raise GroupWorkflowServiceError("workflow_item_not_found", "Workflow item was not found")
+        if target.status != "pending":
+            raise GroupWorkflowServiceError("workflow_change_started_task", "Only unstarted tasks can be changed")
+    elif kind != "add":
+        raise GroupWorkflowServiceError("workflow_change_target_required", "This change requires an unstarted task")
+    change = GroupWorkflowChangeRequest(
+        workflow_id=workflow.id,
+        target_item_id=target.id if target else None,
+        requester_participant_id=requester_participant_id,
+        kind=kind,
+        before={
+            "item_key": target.item_key,
+            "title": target.title,
+            "description": target.description,
+            "acceptance_criteria": target.acceptance_criteria,
+        } if target else {},
+        after=after,
+        impact=await _change_impact(db, workflow_id=workflow.id, target_item_id=target_item_id),
+        reason=reason.strip(),
+    )
+    db.add(change)
+    await db.flush()
+    stage = await db.scalar(
+        select(GroupWorkflowStage).where(GroupWorkflowStage.id == (target.stage_id if target else workflow.current_stage_id))
+    )
+    if stage is not None:
+        await _event(
+            db,
+            workflow=workflow,
+            event_type="task_change_requested",
+            source="agent",
+            actor_participant_id=requester_participant_id,
+            stage_id=stage.id,
+            item_id=target.id if target else None,
+            idempotency_key=f"task-change:{change.id}:requested",
+            payload={"change_request_id": str(change.id), "kind": kind, "impact": change.impact},
+        )
+        await _leader_action(
+            db,
+            workflow=workflow,
+            stage=stage,
+            kind="task_change_confirmation",
+            item=target,
+            extra_payload={"change_request_id": str(change.id), "change_kind": kind, "impact": change.impact},
+        )
+    return change
+
+
+async def _replace_dependencies(
+    db: AsyncSession,
+    *,
+    workflow: GroupWorkflow,
+    item: GroupWorkflowItem,
+    predecessor_ids: list[uuid.UUID],
+) -> None:
+    if item.id in predecessor_ids or len(predecessor_ids) != len(set(predecessor_ids)):
+        raise GroupWorkflowServiceError("workflow_dependency_invalid", "Task dependencies must be distinct and cannot include the task itself")
+    predecessors = list(
+        (
+            await db.execute(
+                select(GroupWorkflowItem).where(
+                    GroupWorkflowItem.workflow_id == workflow.id,
+                    GroupWorkflowItem.id.in_(predecessor_ids),
+                )
+            )
+        ).scalars().all()
+    )
+    if len(predecessors) != len(predecessor_ids):
+        raise GroupWorkflowServiceError("workflow_dependency_invalid", "A referenced dependency is outside this workflow")
+    stages = {
+        stage.id: stage
+        for stage in (
+            await db.execute(select(GroupWorkflowStage).where(GroupWorkflowStage.workflow_id == workflow.id))
+        ).scalars().all()
+    }
+    if any(stages[predecessor.stage_id].position > stages[item.stage_id].position for predecessor in predecessors):
+        raise GroupWorkflowServiceError("workflow_dependency_later_stage", "A task cannot depend on a later stage")
+    await db.execute(
+        delete(GroupWorkflowTaskDependency).where(
+            GroupWorkflowTaskDependency.workflow_id == workflow.id,
+            GroupWorkflowTaskDependency.successor_item_id == item.id,
+        )
+    )
+    for predecessor_id in predecessor_ids:
+        db.add(
+            GroupWorkflowTaskDependency(
+                workflow_id=workflow.id,
+                predecessor_item_id=predecessor_id,
+                successor_item_id=item.id,
+            )
+        )
+    await db.flush()
+    dependencies = list(
+        (
+            await db.execute(
+                select(GroupWorkflowTaskDependency).where(GroupWorkflowTaskDependency.workflow_id == workflow.id)
+            )
+        ).scalars().all()
+    )
+    successors: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for dependency in dependencies:
+        successors.setdefault(dependency.predecessor_item_id, []).append(dependency.successor_item_id)
+    visiting: set[uuid.UUID] = set()
+    visited: set[uuid.UUID] = set()
+
+    def visit(item_id: uuid.UUID) -> None:
+        if item_id in visiting:
+            raise GroupWorkflowServiceError("workflow_dependency_cycle", "Task dependency change would create a cycle")
+        if item_id in visited:
+            return
+        visiting.add(item_id)
+        for successor_item_id in successors.get(item_id, []):
+            visit(successor_item_id)
+        visiting.remove(item_id)
+        visited.add(item_id)
+
+    for item_id in successors:
+        visit(item_id)
+
+
+async def confirm_task_change(
+    db: AsyncSession,
+    *,
+    change_request_id: uuid.UUID,
+    actor_participant_id: uuid.UUID,
+    approved: bool,
+) -> GroupWorkflowChangeRequest:
+    """Apply a pending request only after the actual group leader confirms it."""
+    change = await db.scalar(
+        select(GroupWorkflowChangeRequest).where(GroupWorkflowChangeRequest.id == change_request_id).with_for_update()
+    )
+    if change is None:
+        raise GroupWorkflowServiceError("workflow_change_not_found", "Workflow change request was not found")
+    workflow = await db.scalar(select(GroupWorkflow).where(GroupWorkflow.id == change.workflow_id).with_for_update())
+    if workflow is None:
+        raise GroupWorkflowServiceError("workflow_not_found", "Workflow was not found")
+    if workflow.leader_participant_id != actor_participant_id:
+        raise GroupWorkflowServiceError("workflow_change_confirm_denied", "Only the group leader can confirm this change")
+    if change.status != "pending":
+        raise GroupWorkflowServiceError("workflow_change_not_pending", "Workflow change is already resolved")
+    change.confirmer_participant_id = actor_participant_id
+    target = None
+    if change.target_item_id is not None:
+        target = await db.scalar(select(GroupWorkflowItem).where(GroupWorkflowItem.id == change.target_item_id).with_for_update())
+        if target is None or target.status != "pending":
+            raise GroupWorkflowServiceError("workflow_change_started_task", "Only unstarted tasks can be changed")
+    if not approved:
+        change.status, change.rejected_at = "rejected", _now()
+        return change
+
+    if change.kind == "acceptance":
+        criteria = change.after.get("acceptance_criteria")
+        if target is None or not isinstance(criteria, list) or not all(isinstance(value, str) and value.strip() for value in criteria):
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Acceptance changes require non-empty criteria")
+        target.acceptance_criteria = [value.strip() for value in criteria]
+        target.version += 1
+    elif change.kind == "reconnect":
+        dependency_values = change.after.get("depends_on_item_ids")
+        if target is None or not isinstance(dependency_values, list):
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Dependency changes require predecessor item IDs")
+        try:
+            predecessor_ids = [uuid.UUID(str(value)) for value in dependency_values]
+        except (TypeError, ValueError) as exc:
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Dependency IDs must be UUIDs") from exc
+        await _replace_dependencies(db, workflow=workflow, item=target, predecessor_ids=predecessor_ids)
+    else:
+        stage_value = change.after.get("stage_id")
+        try:
+            stage_id = uuid.UUID(str(stage_value))
+        except (TypeError, ValueError) as exc:
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Added tasks require a stage ID") from exc
+        stage = await db.scalar(select(GroupWorkflowStage).where(GroupWorkflowStage.id == stage_id).with_for_update())
+        if stage is None or stage.workflow_id != workflow.id or stage.status == "completed":
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Tasks can only be added to an uncompleted workflow stage")
+        title = str(change.after.get("title") or "").strip()
+        description = str(change.after.get("description") or "").strip()
+        item_key = str(change.after.get("item_key") or "").strip()
+        criteria = change.after.get("acceptance_criteria")
+        if not title or not description or not item_key or not isinstance(criteria, list) or not criteria:
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Added tasks require key, title, description and acceptance criteria")
+        duplicate = await db.scalar(
+            select(GroupWorkflowItem.id).where(GroupWorkflowItem.stage_id == stage.id, GroupWorkflowItem.item_key == item_key)
+        )
+        if duplicate is not None:
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Task key already exists in this stage")
+        assignee_value = change.after.get("assignee_participant_id")
+        try:
+            assignee_id = uuid.UUID(str(assignee_value)) if assignee_value else None
+        except ValueError as exc:
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Assignee must be a UUID") from exc
+        target = GroupWorkflowItem(
+            workflow_id=workflow.id,
+            stage_id=stage.id,
+            item_key=item_key,
+            title=title,
+            description=description,
+            acceptance_criteria=[str(value).strip() for value in criteria],
+            assignee_participant_id=assignee_id,
+        )
+        db.add(target)
+        await db.flush()
+        dependency_values = change.after.get("depends_on_item_ids", [])
+        if not isinstance(dependency_values, list):
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Task dependencies must be a list")
+        try:
+            predecessor_ids = [uuid.UUID(str(value)) for value in dependency_values]
+        except (TypeError, ValueError) as exc:
+            raise GroupWorkflowServiceError("workflow_change_invalid", "Dependency IDs must be UUIDs") from exc
+        await _replace_dependencies(db, workflow=workflow, item=target, predecessor_ids=predecessor_ids)
+
+    change.status, change.confirmed_at = "confirmed", _now()
+    workflow.version += 1
+    await _event(
+        db,
+        workflow=workflow,
+        event_type="task_change_confirmed",
+        source="agent",
+        actor_participant_id=actor_participant_id,
+        item_id=target.id if target else None,
+        idempotency_key=f"task-change:{change.id}:confirmed",
+        payload={"change_request_id": str(change.id), "kind": change.kind},
+    )
+    await _refresh_ready_items(db, workflow=workflow)
+    return change
 
 
 async def pause(db: AsyncSession, *, workflow_id: uuid.UUID, actor_participant_id: uuid.UUID) -> GroupWorkflow:
@@ -633,6 +1170,7 @@ async def _complete_stage(db: AsyncSession, *, workflow: GroupWorkflow, stage: G
     workflow.version += 1
     await _event(db, workflow=workflow, event_type="stage_activated", source="workflow", stage_id=next_stage.id,
                  idempotency_key=f"stage:{next_stage.id}:activated")
+    ready_items = await _refresh_ready_items(db, workflow=workflow, stage_ids={next_stage.id})
     action = await _leader_action(db, workflow=workflow, stage=next_stage, kind="stage_activated")
     await _notify_okr(workflow, "stage_activated", next_stage, confirmed=confirmed)
-    return WorkflowTransition(workflow, stage, next_stage, action)
+    return WorkflowTransition(workflow, stage, next_stage, action, ready_items)

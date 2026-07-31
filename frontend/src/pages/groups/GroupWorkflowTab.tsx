@@ -29,9 +29,11 @@ const sourceLabel: Record<string, string> = {
     ai: 'AI 生成',
 };
 const stateLabel: Record<string, string> = {
-    pending: '待推进',
+    pending: '待依赖完成',
+    ready: '已就绪',
     in_progress: '进行中',
     blocked: '已阻塞',
+    failed: '执行失败',
     awaiting_approval: '待确认',
     done: '已完成',
 };
@@ -90,6 +92,7 @@ export default function GroupWorkflowTab({
     const client = useQueryClient();
     const [manageOpen, setManageOpen] = useState(false);
     const [focusCurrentOnly, setFocusCurrentOnly] = useState(true);
+    const [decisionNotes, setDecisionNotes] = useState<Record<string, string>>({});
     const workflowQuery = useQuery({
         queryKey: ['group-workflow', groupId],
         queryFn: () => groupWorkflowApi.get(groupId),
@@ -128,14 +131,16 @@ export default function GroupWorkflowTab({
         staleTime: 8_000,
     });
     const approveDecision = useMutation({
-        mutationFn: (decisionId: string) => groupApi.approveDecision(groupId, decisionId),
+        mutationFn: ({ decisionId, note }: { decisionId: string; note: string }) =>
+            groupApi.approveDecision(groupId, decisionId, note),
         onSuccess: () => {
             refresh();
             void pendingDecisionsQuery.refetch();
         },
     });
     const rejectDecision = useMutation({
-        mutationFn: (decisionId: string) => groupApi.rejectDecision(groupId, decisionId),
+        mutationFn: ({ decisionId, reason }: { decisionId: string; reason: string }) =>
+            groupApi.rejectDecision(groupId, decisionId, reason),
         onSuccess: () => {
             refresh();
             void pendingDecisionsQuery.refetch();
@@ -166,21 +171,22 @@ export default function GroupWorkflowTab({
     const visibleItems = focusCurrentOnly && currentStage
         ? workflow.items.filter((item) => {
             const stage = workflow.stages.find((s) => s.id === item.stage_id);
-            return stage?.id === currentStage.id || item.status === 'blocked' || item.status === 'in_progress';
+            return stage?.id === currentStage.id || item.status === 'blocked' || item.status === 'failed' || item.status === 'in_progress';
         })
         : workflow.items;
-    const grouped = ['in_progress', 'awaiting_approval', 'blocked', 'pending', 'done']
-        .map((status) => [status, visibleItems.filter((item) => item.status === status)] as const)
-        .filter(([, items]) => items.length);
+    const nodes = workflow.stages
+        .map((stage) => {
+            const tasks = visibleItems.filter((item) => item.stage_id === stage.id);
+            const completed = tasks.filter((item) => item.status === 'done').length;
+            return { stage, tasks, completed };
+        })
+        .filter(({ tasks }) => tasks.length > 0);
 
     const action = (item: WorkflowItem) => {
-        if (
-            item.assignee_participant_id !== myParticipantId &&
-            workflow.leader_participant_id !== myParticipantId
-        ) {
+        if (item.assignee_participant_id !== myParticipantId) {
             return null;
         }
-        if (item.status === 'pending') {
+        if (item.status === 'ready') {
             return (
                 <button type="button" onClick={() => start.mutate(item)}>
                     <IconPlayerPlay size={13} />
@@ -279,20 +285,45 @@ export default function GroupWorkflowTab({
                 <div className="workflow-gate">
                     <IconAlertTriangle size={16} />
                     <div>
-                        <strong>待决策者升级确认 · {pendingDecisions.length}</strong>
+                        <strong>决策者请求你拍板 · {pendingDecisions.length}</strong>
                         {pendingDecisions.map((decision) => (
                             <div key={String(decision.id)} className="workflow-decision-row">
                                 <span>
                                     {String(decision.title)} · {String(decision.category)}
                                 </span>
+                                <p className="workflow-decision-recommendation">
+                                    发起人：{memberName(String(decision.decision_maker_participant_id ?? ''))}（决策者）
+                                </p>
+                                {Boolean(decision.summary) && <p>{String(decision.summary)}</p>}
+                                {Boolean(decision.recommendation) && <p className="workflow-decision-recommendation">建议：{String(decision.recommendation)}</p>}
+                                <textarea
+                                    aria-label={`${String(decision.title)} 的决策说明`}
+                                    placeholder="可选：输入你的决策说明、约束或需要群主执行的要求"
+                                    value={decisionNotes[String(decision.id)] ?? ''}
+                                    onChange={(event) => setDecisionNotes((current) => ({
+                                        ...current,
+                                        [String(decision.id)]: event.target.value,
+                                    }))}
+                                />
                                 <div className="workflow-decision-actions">
-                                    <button type="button" onClick={() => approveDecision.mutate(String(decision.id))}>
+                                    <button
+                                        type="button"
+                                        disabled={approveDecision.isPending || rejectDecision.isPending}
+                                        onClick={() => approveDecision.mutate({
+                                            decisionId: String(decision.id),
+                                            note: decisionNotes[String(decision.id)] ?? '',
+                                        })}
+                                    >
                                         批准
                                     </button>
                                     <button
                                         type="button"
                                         className="quiet"
-                                        onClick={() => rejectDecision.mutate(String(decision.id))}
+                                        disabled={approveDecision.isPending || rejectDecision.isPending}
+                                        onClick={() => rejectDecision.mutate({
+                                            decisionId: String(decision.id),
+                                            reason: decisionNotes[String(decision.id)] ?? '',
+                                        })}
                                     >
                                         拒绝
                                     </button>
@@ -346,19 +377,38 @@ export default function GroupWorkflowTab({
                 </button>
             </div>
 
-            <div className="workflow-queues">
-                {grouped.map(([status, items]) => (
-                    <section key={status}>
+            <div className="workflow-nodes">
+                {nodes.map(({ stage, tasks, completed }) => (
+                    <section className={`workflow-node ${stage.status}`} key={stage.id}>
                         <header>
-                            {stateLabel[status]} <span>{items.length}</span>
+                            <div>
+                                <span className="workflow-node-index">节点 {stage.position + 1}</span>
+                                <strong>{stage.title}</strong>
+                                <p>{stage.goal}</p>
+                            </div>
+                            <span className="workflow-node-progress">
+                                {completed}/{tasks.length} 任务完成
+                            </span>
                         </header>
-                        {items.map((item) => (
+                        <div className="workflow-node-rule">
+                            {completed === tasks.length
+                                ? '节点任务已全部验收，等待节点规则确认。'
+                                : `必须完成并验收全部 ${tasks.length} 个任务，才能进入下一节点。`}
+                        </div>
+                        <div className="workflow-node-tasks">
+                        {tasks.map((item) => (
                             <article className={`workflow-item ${item.status}`} key={item.id}>
                                 <div>
                                     <strong>{item.title}</strong>
-                                    <small>{memberName(item.assignee_participant_id)}</small>
+                                    <small>负责人：{memberName(item.assignee_participant_id)}</small>
                                 </div>
                                 <p>{item.description}</p>
+                                {item.depends_on.length > 0 && (
+                                    <div className="workflow-evidence">依赖 {item.depends_on.length} 项前置任务</div>
+                                )}
+                                {item.acceptance_criteria.length > 0 && (
+                                    <div className="workflow-evidence">验收：{item.acceptance_criteria.join('；')}</div>
+                                )}
                                 {item.blocked_reason && (
                                     <div className="workflow-blocker">
                                         <IconAlertTriangle size={13} />
@@ -376,9 +426,10 @@ export default function GroupWorkflowTab({
                                 <footer>{action(item)}</footer>
                             </article>
                         ))}
+                        </div>
                     </section>
                 ))}
-                {grouped.length === 0 && (
+                {nodes.length === 0 && (
                     <p className="workflow-empty-hint">当前没有需要展示的工作项。</p>
                 )}
             </div>

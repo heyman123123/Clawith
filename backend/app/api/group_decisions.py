@@ -24,6 +24,10 @@ class RejectDecisionIn(BaseModel):
     reason: str | None = Field(default=None, max_length=2000)
 
 
+class ApproveDecisionIn(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
 def _decision_error(exc: decision_service.GroupDecisionError) -> HTTPException:
     status = 404 if exc.code.endswith("not_found") else 400
     if exc.code.endswith("denied"):
@@ -70,6 +74,7 @@ async def list_group_decisions(
 async def approve_group_decision(
     group_id: uuid.UUID,
     decision_id: uuid.UUID,
+    body: ApproveDecisionIn | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -78,7 +83,7 @@ async def approve_group_decision(
     await _manager_scope(db, tenant_id=tenant_id, group_id=group_id, participant_id=participant.id)
     try:
         decision = await decision_service.approve_decision(
-            db, decision_id=decision_id, actor_participant_id=participant.id
+            db, decision_id=decision_id, actor_participant_id=participant.id, note=(body.note if body else None)
         )
     except decision_service.GroupDecisionError as exc:
         raise _decision_error(exc) from exc

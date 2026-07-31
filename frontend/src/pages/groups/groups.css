@@ -747,6 +747,9 @@
 .workflow-gate > button { flex: 0 0 auto; margin-left: auto; padding: 5px 7px; border-radius: var(--radius-sm); background: var(--warning); color: var(--text-inverse, #fff); font-size: 10px; white-space: nowrap; }
 .workflow-paused { align-items: center; background: var(--bg-tertiary); color: var(--text-secondary); }
 .workflow-decision-row { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.workflow-decision-row p { margin: 0; color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.45; white-space: pre-wrap; }
+.workflow-decision-row .workflow-decision-recommendation { color: var(--accent-primary); }
+.workflow-decision-row textarea { min-height: 58px; padding: 7px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-primary); color: var(--text-primary); font: inherit; font-size: var(--text-xs); line-height: 1.4; resize: vertical; }
 .workflow-decision-actions { display: flex; gap: 6px; }
 .workflow-decision-actions button { padding: 4px 8px; border-radius: var(--radius-sm); background: var(--warning); color: var(--text-inverse, #fff); font-size: 10px; }
 .workflow-decision-actions button.quiet { background: transparent; border: 1px solid var(--border-default); color: var(--text-secondary); }
@@ -777,6 +780,18 @@
 .workflow-queues section { display: flex; flex-direction: column; gap: var(--space-2); }
 .workflow-queues section > header { display: flex; align-items: center; gap: 5px; color: var(--text-tertiary); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .workflow-queues section > header span { display: grid; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: var(--bg-tertiary); font-size: 9px; }
+.workflow-nodes { display: flex; flex-direction: column; gap: var(--space-3); }
+.workflow-node { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-secondary); }
+.workflow-node.active { border-color: color-mix(in srgb, var(--accent-primary) 52%, var(--border-default)); }
+.workflow-node.completed { border-color: color-mix(in srgb, var(--success, #1f9d69) 44%, var(--border-default)); }
+.workflow-node > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.workflow-node > header > div { min-width: 0; }
+.workflow-node-index { display: block; margin-bottom: 3px; color: var(--accent-primary); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.workflow-node > header strong { color: var(--text-primary); font-size: var(--text-sm); }
+.workflow-node > header p { margin: 3px 0 0; color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.45; }
+.workflow-node-progress { flex: 0 0 auto; padding: 3px 6px; border-radius: 999px; background: var(--accent-subtle); color: var(--accent-primary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.workflow-node-rule { padding: 7px 9px; border-left: 2px solid var(--accent-primary); background: var(--bg-primary); color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
+.workflow-node-tasks { display: flex; flex-direction: column; gap: var(--space-2); }
 .workflow-item { padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-primary); }
 .workflow-item.blocked { border-color: color-mix(in srgb, var(--error) 46%, var(--border-default)); }
 .workflow-item > div:first-child { display: flex; justify-content: space-between; gap: var(--space-2); align-items: flex-start; }

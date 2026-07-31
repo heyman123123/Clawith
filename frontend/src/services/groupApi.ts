@@ -63,10 +63,10 @@ export const groupApi = {
             `/groups/${groupId}/decisions${qs({ status })}`,
         ),
 
-    approveDecision: (groupId: string, decisionId: string) =>
+    approveDecision: (groupId: string, decisionId: string, note?: string) =>
         fetchJson<Record<string, unknown>>(`/groups/${groupId}/decisions/${decisionId}/approve`, {
             method: 'POST',
-            body: '{}',
+            body: JSON.stringify({ note }),
         }),
 
     rejectDecision: (groupId: string, decisionId: string, reason?: string) =>

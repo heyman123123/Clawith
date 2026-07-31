@@ -16,6 +16,8 @@ class WorkflowItemPlan(BaseModel):
     item_key: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$", max_length=100)
     title: str = Field(min_length=1, max_length=300)
     description: str = Field(min_length=1, max_length=4000)
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+    depends_on: list[str] = Field(default_factory=list, max_length=50)
     assignee_participant_id: uuid.UUID | None = None
 
 
@@ -49,6 +51,43 @@ class WorkflowPlan(BaseModel):
             item_keys = [item.item_key for item in stage.items]
             if len(item_keys) != len(set(item_keys)):
                 raise ValueError(f"item keys must be unique in {stage.key}")
+        items_by_key = {
+            f"{stage.key}.{item.item_key}": (position, item)
+            for position, stage in enumerate(self.stages)
+            for item in stage.items
+        }
+        successors: dict[str, list[str]] = {key: [] for key in items_by_key}
+        for item_key, (stage_position, item) in items_by_key.items():
+            seen_dependencies: set[str] = set()
+            for dependency_key in item.depends_on:
+                if dependency_key in seen_dependencies:
+                    raise ValueError(f"workflow item {item_key} has duplicate dependency {dependency_key}")
+                seen_dependencies.add(dependency_key)
+                if dependency_key == item_key:
+                    raise ValueError(f"workflow item {item_key} cannot depend on itself")
+                dependency = items_by_key.get(dependency_key)
+                if dependency is None:
+                    raise ValueError(f"workflow item {item_key} has unknown dependency {dependency_key}")
+                if dependency[0] > stage_position:
+                    raise ValueError(f"workflow item {item_key} cannot depend on a later stage task")
+                successors[dependency_key].append(item_key)
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(item_key: str) -> None:
+            if item_key in visiting:
+                raise ValueError(f"workflow task dependency cycle detected at {item_key}")
+            if item_key in visited:
+                return
+            visiting.add(item_key)
+            for successor_key in successors[item_key]:
+                visit(successor_key)
+            visiting.remove(item_key)
+            visited.add(item_key)
+
+        for item_key in successors:
+            visit(item_key)
         return self
 
 

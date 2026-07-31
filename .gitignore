@@ -47,3 +47,5 @@ backend/app/scripts/toolathlon_benchmark.py
 backend/app/services/agent_runtime/benchmark/
 backend/tests/test_agent_runtime_benchmark.py
 clawithdata/
+backend/agent_templates/agency-*/
+backend/agent_templates/AGENCY_AGENTS_ZH_LICENSE.md

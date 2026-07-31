@@ -60,7 +60,10 @@ class GroupWorkflowStage(Base):
 class GroupWorkflowItem(Base):
     __tablename__ = "group_workflow_items"
     __table_args__ = (
-        CheckConstraint("status IN ('pending', 'in_progress', 'blocked', 'awaiting_approval', 'done')", name="ck_group_workflow_items_status"),
+        CheckConstraint(
+            "status IN ('pending', 'ready', 'in_progress', 'blocked', 'awaiting_approval', 'done', 'failed')",
+            name="ck_group_workflow_items_status",
+        ),
         UniqueConstraint("stage_id", "item_key", name="uq_group_workflow_items_key"),
         Index("ix_group_workflow_items_stage_status", "stage_id", "status"),
         Index("ix_group_workflow_items_assignee_status", "assignee_participant_id", "status"),
@@ -72,11 +75,72 @@ class GroupWorkflowItem(Base):
     item_key: Mapped[str] = mapped_column(String(100), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    acceptance_criteria: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     assignee_participant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("participants.id", ondelete="SET NULL"))
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'pending'"))
     evidence: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     blocked_reason: Mapped[str | None] = mapped_column(Text)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(120))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class GroupWorkflowTaskDependency(Base):
+    __tablename__ = "group_workflow_task_dependencies"
+    __table_args__ = (
+        CheckConstraint("predecessor_item_id <> successor_item_id", name="ck_group_workflow_task_dependencies_distinct"),
+        UniqueConstraint("predecessor_item_id", "successor_item_id", name="uq_group_workflow_task_dependencies_edge"),
+        Index("ix_group_workflow_task_dependencies_predecessor", "predecessor_item_id"),
+        Index("ix_group_workflow_task_dependencies_successor", "successor_item_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("group_workflows.id", ondelete="CASCADE"), nullable=False
+    )
+    predecessor_item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("group_workflow_items.id", ondelete="CASCADE"), nullable=False
+    )
+    successor_item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("group_workflow_items.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class GroupWorkflowChangeRequest(Base):
+    __tablename__ = "group_workflow_change_requests"
+    __table_args__ = (
+        CheckConstraint("kind IN ('add', 'split', 'reconnect', 'acceptance')", name="ck_group_workflow_change_requests_kind"),
+        CheckConstraint("status IN ('pending', 'confirmed', 'rejected')", name="ck_group_workflow_change_requests_status"),
+        Index("ix_group_workflow_change_requests_workflow_status", "workflow_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("group_workflows.id", ondelete="CASCADE"), nullable=False
+    )
+    target_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("group_workflow_items.id", ondelete="SET NULL")
+    )
+    requester_participant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("participants.id", ondelete="RESTRICT"), nullable=False
+    )
+    confirmer_participant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("participants.id", ondelete="SET NULL")
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'pending'"))
+    before: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    after: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    impact: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
