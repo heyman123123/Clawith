@@ -22,7 +22,7 @@ from app.models.user import User
 
 router = APIRouter(prefix="/api/ai-monitoring", tags=["ai-monitoring"])
 
-SortBy = Literal["failures", "tokens", "calls"]
+SortBy = Literal["latest", "failures", "tokens", "calls"]
 SortOrder = Literal["asc", "desc"]
 RangeKey = Literal["24h"]
 
@@ -83,6 +83,7 @@ class AIAgentStatsRowOut(BaseModel):
     successes: int
     failures: int
     total_tokens: int
+    last_called_at: datetime | None = None
 
 
 class AIAgentStatsOut(BaseModel):
@@ -107,6 +108,7 @@ class AIGroupStatsRowOut(BaseModel):
     successes: int
     failures: int
     total_tokens: int
+    last_called_at: datetime | None = None
 
 
 class AIGroupStatsOut(BaseModel):
@@ -128,7 +130,29 @@ def _metric_exprs():
     failures_expr = func.count(AIInteractionLog.id).filter(AIInteractionLog.status == "error")
     successes_expr = func.count(AIInteractionLog.id).filter(AIInteractionLog.status == "success")
     tokens_expr = func.coalesce(func.sum(AIInteractionLog.total_tokens), 0)
-    return calls_expr, successes_expr, failures_expr, tokens_expr
+    latest_expr = func.max(AIInteractionLog.created_at)
+    return calls_expr, successes_expr, failures_expr, tokens_expr, latest_expr
+
+
+def _ordered_metrics(*, sort_by: SortBy, order: SortOrder, latest_expr, failures_expr, tokens_expr, calls_expr):
+    """Primary sort plus stable secondary ranks: latest → failures → tokens → calls."""
+    primary = {
+        "latest": latest_expr,
+        "failures": failures_expr,
+        "tokens": tokens_expr,
+        "calls": calls_expr,
+    }[sort_by]
+    direction = "asc" if order == "asc" else "desc"
+    def _dir(column):
+        return column.asc().nulls_last() if direction == "asc" else column.desc().nulls_last()
+
+    secondary = [latest_expr, failures_expr, tokens_expr, calls_expr]
+    # Keep primary first, then the remaining default priority without duplicates.
+    ordered_cols = [primary]
+    for column in secondary:
+        if column is not primary:
+            ordered_cols.append(column)
+    return [_dir(column) for column in ordered_cols]
 
 
 def _session_group_join():
@@ -294,7 +318,7 @@ async def ai_interaction_overview(
 async def ai_agent_stats(
     date: str | None = None,
     range_key: RangeKey | None = Query(default="24h", alias="range"),  # noqa: B008
-    sort_by: SortBy = "failures",
+    sort_by: SortBy = "latest",
     order: SortOrder = "desc",
     group_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_admin),  # noqa: B008
@@ -305,13 +329,15 @@ async def ai_agent_stats(
     day = _parse_day(date)
     effective_range = None if day is not None else range_key
     since, until, range_label = _window(range_key=effective_range, day=day)
-    calls_expr, successes_expr, failures_expr, tokens_expr = _metric_exprs()
-    sort_column = {
-        "failures": failures_expr,
-        "tokens": tokens_expr,
-        "calls": calls_expr,
-    }[sort_by]
-    ordered = sort_column.asc() if order == "asc" else sort_column.desc()
+    calls_expr, successes_expr, failures_expr, tokens_expr, latest_expr = _metric_exprs()
+    order_by = _ordered_metrics(
+        sort_by=sort_by,
+        order=order,
+        latest_expr=latest_expr,
+        failures_expr=failures_expr,
+        tokens_expr=tokens_expr,
+        calls_expr=calls_expr,
+    )
     statement = (
         select(
             AIInteractionLog.agent_id,
@@ -319,6 +345,7 @@ async def ai_agent_stats(
             successes_expr,
             failures_expr,
             tokens_expr,
+            latest_expr,
         )
         .where(
             AIInteractionLog.tenant_id == current_user.tenant_id,
@@ -326,7 +353,7 @@ async def ai_agent_stats(
             AIInteractionLog.created_at < until,
         )
         .group_by(AIInteractionLog.agent_id)
-        .order_by(ordered, AIInteractionLog.agent_id.asc().nulls_last())
+        .order_by(*order_by, AIInteractionLog.agent_id.asc().nulls_last())
     )
     if group_id is not None:
         statement = (
@@ -336,6 +363,7 @@ async def ai_agent_stats(
                 successes_expr,
                 failures_expr,
                 tokens_expr,
+                latest_expr,
             )
             .join(ChatSession, _session_group_join())
             .where(
@@ -346,7 +374,7 @@ async def ai_agent_stats(
                 ChatSession.group_id == group_id,
             )
             .group_by(AIInteractionLog.agent_id)
-            .order_by(ordered, AIInteractionLog.agent_id.asc().nulls_last())
+            .order_by(*order_by, AIInteractionLog.agent_id.asc().nulls_last())
         )
     result = await db.execute(statement)
     rows = list(result.all())
@@ -363,8 +391,9 @@ async def ai_agent_stats(
             successes=int(successes or 0),
             failures=int(failures or 0),
             total_tokens=int(tokens or 0),
+            last_called_at=last_called_at,
         )
-        for agent_id, calls, successes, failures, tokens in rows
+        for agent_id, calls, successes, failures, tokens, last_called_at in rows
     ]
     return AIAgentStatsOut(
         range=range_label,
@@ -386,7 +415,7 @@ async def ai_agent_stats(
 async def ai_group_stats(
     date: str | None = None,
     range_key: RangeKey | None = Query(default="24h", alias="range"),  # noqa: B008
-    sort_by: SortBy = "failures",
+    sort_by: SortBy = "latest",
     order: SortOrder = "desc",
     current_user: User = Depends(get_current_admin),  # noqa: B008
     db: AsyncSession = Depends(get_db),  # noqa: B008
@@ -396,13 +425,15 @@ async def ai_group_stats(
     day = _parse_day(date)
     effective_range = None if day is not None else range_key
     since, until, range_label = _window(range_key=effective_range, day=day)
-    calls_expr, successes_expr, failures_expr, tokens_expr = _metric_exprs()
-    sort_column = {
-        "failures": failures_expr,
-        "tokens": tokens_expr,
-        "calls": calls_expr,
-    }[sort_by]
-    ordered = sort_column.asc() if order == "asc" else sort_column.desc()
+    calls_expr, successes_expr, failures_expr, tokens_expr, latest_expr = _metric_exprs()
+    order_by = _ordered_metrics(
+        sort_by=sort_by,
+        order=order,
+        latest_expr=latest_expr,
+        failures_expr=failures_expr,
+        tokens_expr=tokens_expr,
+        calls_expr=calls_expr,
+    )
     result = await db.execute(
         select(
             ChatSession.group_id,
@@ -410,6 +441,7 @@ async def ai_group_stats(
             successes_expr,
             failures_expr,
             tokens_expr,
+            latest_expr,
         )
         .join(ChatSession, _session_group_join())
         .where(
@@ -419,7 +451,7 @@ async def ai_group_stats(
             *_active_group_session_filters(current_user.tenant_id),
         )
         .group_by(ChatSession.group_id)
-        .order_by(ordered, ChatSession.group_id.asc())
+        .order_by(*order_by, ChatSession.group_id.asc())
     )
     rows = list(result.all())
     group_ids = {group_id for group_id, *_ in rows if group_id is not None}
@@ -440,8 +472,9 @@ async def ai_group_stats(
             successes=int(successes or 0),
             failures=int(failures or 0),
             total_tokens=int(tokens or 0),
+            last_called_at=last_called_at,
         )
-        for group_id, calls, successes, failures, tokens in rows
+        for group_id, calls, successes, failures, tokens, last_called_at in rows
     ]
     return AIGroupStatsOut(
         range=range_label,

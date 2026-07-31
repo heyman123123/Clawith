@@ -1148,6 +1148,12 @@ async def list_active_group_runs(
     except GroupChatServiceError as exc:
         raise _translate_domain_error(exc) from exc
 
+    from datetime import UTC, datetime, timedelta
+
+    # Runs that never reach a terminal checkpoint still animate forever in the UI.
+    # Hide spinner after this age while keeping cancel available via status=stale.
+    stale_after = datetime.now(UTC) - timedelta(minutes=15)
+
     terminal_event = exists(
         select(AgentRunEvent.id).where(
             AgentRunEvent.tenant_id == tenant_id,
@@ -1177,10 +1183,18 @@ async def list_active_group_runs(
             execution_status = view.execution_status or "created"
             if execution_status in {"completed", "failed", "cancelled"}:
                 continue
+            created_at = run.created_at
+            if created_at is not None and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            is_stale = (
+                created_at is not None
+                and created_at < stale_after
+                and execution_status in {"running", "created"}
+            )
             active.append(
                 GroupRunStateOut(
                     run_id=run.id,
-                    status=execution_status,
+                    status="stale" if is_stale else execution_status,
                     can_cancel=True,
                     agent_id=run.agent_id,
                     system_role=run.system_role,

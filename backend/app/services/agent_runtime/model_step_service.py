@@ -119,15 +119,12 @@ def _visible_mention_names(content: str, member_names: Sequence[str]) -> tuple[s
     return tuple(dict.fromkeys(name for _, _, name in sorted(matches)))
 
 
-async def _group_mention_mismatches(
+async def _group_mention_directory(
     db: AsyncSession,
     *,
     state: RuntimeGraphState,
-    content: str,
-    mention_participant_ids: tuple[str, ...],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    if "@" not in content and not mention_participant_ids:
-        return (), ()
+) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """Load agent members for the current group as name→ids and id→name maps."""
     initial_input = state["snapshots"].initial_input
     raw_group_id = initial_input.get("group_id")
     if raw_group_id is None:
@@ -157,7 +154,18 @@ async def _group_mention_mismatches(
         normalized_id = str(participant_id)
         participants_by_name.setdefault(display_name, set()).add(normalized_id)
         participant_names[normalized_id] = display_name
+    return participants_by_name, participant_names
 
+
+def _mention_mismatches_from_directory(
+    *,
+    content: str,
+    mention_participant_ids: tuple[str, ...],
+    participants_by_name: dict[str, set[str]],
+    participant_names: dict[str, str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if "@" not in content and not mention_participant_ids:
+        return (), ()
     provided_ids = set(mention_participant_ids)
     visible_names = _visible_mention_names(content, tuple(participants_by_name))
     missing_structured = tuple(
@@ -175,6 +183,61 @@ async def _group_mention_mismatches(
         )
     )
     return missing_structured, missing_visible
+
+
+def _auto_stage_unique_visible_mentions(
+    *,
+    content: str,
+    mention_participant_ids: tuple[str, ...],
+    participants_by_name: dict[str, set[str]],
+) -> tuple[str, ...] | None:
+    """If every visible @Name maps to exactly one agent, merge those IDs into staging.
+
+    Ambiguous duplicate display names still require an explicit `at` call.
+    """
+    visible_names = _visible_mention_names(content, tuple(participants_by_name))
+    if not visible_names:
+        return None
+    merged = list(mention_participant_ids)
+    seen = set(mention_participant_ids)
+    for name in visible_names:
+        ids = participants_by_name.get(name) or set()
+        if len(ids) != 1:
+            return None
+        participant_id = next(iter(ids))
+        if participant_id not in seen:
+            merged.append(participant_id)
+            seen.add(participant_id)
+    return tuple(merged)
+
+
+def _ensure_visible_at_names(content: str, missing_names: tuple[str, ...]) -> str:
+    """Append missing visible @mentions so staged `at` targets match the public body."""
+    if not missing_names:
+        return content
+    suffix = " ".join(f"@{name}" for name in missing_names)
+    body = content.rstrip()
+    if not body:
+        return suffix
+    return f"{body}\n{suffix}"
+
+
+async def _group_mention_mismatches(
+    db: AsyncSession,
+    *,
+    state: RuntimeGraphState,
+    content: str,
+    mention_participant_ids: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if "@" not in content and not mention_participant_ids:
+        return (), ()
+    participants_by_name, participant_names = await _group_mention_directory(db, state=state)
+    return _mention_mismatches_from_directory(
+        content=content,
+        mention_participant_ids=mention_participant_ids,
+        participants_by_name=participants_by_name,
+        participant_names=participant_names,
+    )
 
 
 def _pending_group_at_participant_ids(
@@ -1767,12 +1830,38 @@ class RuntimeModelStepService:
                         legacy_participant_ids or staged_participant_ids
                     )
                     async with self._session_factory() as db:
-                        missing_structured, missing_visible = await _group_mention_mismatches(
-                            db,
-                            state=state,
+                        participants_by_name, participant_names = await _group_mention_directory(
+                            db, state=state
+                        )
+                        missing_structured, missing_visible = _mention_mismatches_from_directory(
                             content=result.finish_content or "",
                             mention_participant_ids=mention_participant_ids,
+                            participants_by_name=participants_by_name,
+                            participant_names=participant_names,
                         )
+                        if missing_structured:
+                            healed_ids = _auto_stage_unique_visible_mentions(
+                                content=result.finish_content or "",
+                                mention_participant_ids=mention_participant_ids,
+                                participants_by_name=participants_by_name,
+                            )
+                            if healed_ids is not None:
+                                mention_participant_ids = healed_ids
+                                missing_structured, missing_visible = (
+                                    _mention_mismatches_from_directory(
+                                        content=result.finish_content or "",
+                                        mention_participant_ids=mention_participant_ids,
+                                        participants_by_name=participants_by_name,
+                                        participant_names=participant_names,
+                                    )
+                                )
+                        if missing_visible and not missing_structured:
+                            healed_content = _ensure_visible_at_names(
+                                result.finish_content or "",
+                                missing_visible,
+                            )
+                            result = replace(result, finish_content=healed_content)
+                            missing_visible = ()
                         if missing_structured:
                             names = ", ".join(f"@{name}" for name in missing_structured)
                             result = _repair(

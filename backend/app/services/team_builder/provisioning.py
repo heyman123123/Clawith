@@ -20,7 +20,7 @@ from app.services.participant_identity import (
     get_or_create_agent_participant,
     get_or_create_user_participant,
 )
-from app.services.team_builder.planning import TeamPlanMember, validate_team_plan
+from app.services.team_builder.planning import TeamPlanMember, build_team_sop, validate_team_plan
 
 logger = logging.getLogger(__name__)
 _READY_AGENT_STATUSES = frozenset({"running", "idle"})
@@ -287,6 +287,14 @@ async def provision_job(db: AsyncSession, *, job_id: uuid.UUID) -> TeamProvision
             content=roster,
             require_absent=True,
         )
+        sop_text = (plan.sop or "").strip() or build_team_sop(plan)
+        await group_file_service.write_announcement(
+            db,
+            tenant_id=job.tenant_id,
+            group_id=group.id,
+            actor_participant_id=creator.id,
+            content=sop_text,
+        )
 
     if job.activation_message_id is None:
         if job.group_id is None or job.session_id is None or job.leader_participant_id is None:
@@ -301,7 +309,8 @@ async def provision_job(db: AsyncSession, *, job_id: uuid.UUID) -> TeamProvision
             session_id=job.session_id,
             sender_participant_id=creator.id,
             content=(
-                "请基于已确认的 TEAM_BRIEF.md 组建工作节奏，公开拆解并 @ 派发首批任务，"
+                "请先阅读群公告中的协作 SOP（全体 Agent 必须遵循），"
+                "再基于 TEAM_BRIEF.md 组建工作节奏，公开拆解并 @ 派发首批任务，"
                 "用工作流工具提交证据推进阶段。"
                 "项目级确认找群内决策者，不要等我（人类）批准再往下走；"
                 "完成后可向我简短同步（仅告知）。"

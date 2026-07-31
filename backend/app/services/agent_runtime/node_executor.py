@@ -678,9 +678,10 @@ class DeterministicRuntimeNodeExecutor:
                     repair_code == "invalid_tool_call"
                     and result.repair_tool_name == "write_file"
                 )
+                is_group_at_repair = repair_code == "invalid_group_at"
                 repair_limit = (
                     WRITE_FILE_PROTOCOL_REPAIR_LIMIT
-                    if is_write_file_repair
+                    if is_write_file_repair or is_group_at_repair
                     else 1
                 )
                 repair_counter_key = (

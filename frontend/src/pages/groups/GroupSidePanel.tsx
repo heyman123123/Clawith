@@ -28,6 +28,11 @@ const PANEL_MAX_WIDTH = 560;
 const clampWidth = (value: number) =>
     Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, value));
 
+const formatTokens = (value: number) =>
+    value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M`
+        : value >= 1_000 ? `${(value / 1_000).toFixed(1)}K`
+            : String(value || 0);
+
 interface GroupSidePanelProps {
     groupId: string;
     groupName: string;
@@ -64,6 +69,7 @@ export default function GroupSidePanel({
     const [selectedAgent, setSelectedAgent] = useState<AIAgentStatsRow | null>(null);
     const [rangeMode, setRangeMode] = useState<'24h' | 'day'>('24h');
     const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+    const [sortBy, setSortBy] = useState<'latest' | 'failures' | 'tokens' | 'calls'>('latest');
     const user = useAuthStore((state) => state.user);
     const isAdmin = user?.role === 'org_admin' || user?.role === 'platform_admin' || !!user?.is_platform_admin;
     const rangeFilters = {
@@ -71,8 +77,8 @@ export default function GroupSidePanel({
         range: rangeMode === '24h' ? '24h' as const : null,
     };
     const agentStats = useQuery({
-        queryKey: ['group-ai-monitoring-agents', groupId, rangeMode, date],
-        queryFn: () => aiMonitoringApi.agentStats({ groupId, ...rangeFilters, sortBy: 'failures', order: 'desc' }),
+        queryKey: ['group-ai-monitoring-agents', groupId, rangeMode, date, sortBy],
+        queryFn: () => aiMonitoringApi.agentStats({ groupId, ...rangeFilters, sortBy, order: 'desc' }),
         enabled: isAdmin && tab === 'monitoring',
         staleTime: 10_000,
         refetchInterval: 15_000,
@@ -245,7 +251,7 @@ export default function GroupSidePanel({
                             {t('dashboard.aiMonitoring.refresh')}
                         </button>
                     </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 12px 10px' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 12px 10px', alignItems: 'center' }}>
                         <button type="button" className={`btn ${rangeMode === '24h' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setRangeMode('24h'); setMonitoringPage(1); }} style={{ fontSize: '11px' }}>
                             {t('dashboard.aiMonitoring.range24h')}
                         </button>
@@ -260,6 +266,32 @@ export default function GroupSidePanel({
                                 style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '6px', border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-primary)' }}
                             />
                         )}
+                        <label style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                            {t('dashboard.aiMonitoring.sortBy')}
+                            <select
+                                value={sortBy}
+                                onChange={(event) => setSortBy(event.target.value as typeof sortBy)}
+                                style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '6px', border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-primary)' }}
+                            >
+                                <option value="latest">{t('dashboard.aiMonitoring.sortLatest', '最新调用')}</option>
+                                <option value="failures">{t('dashboard.aiMonitoring.sortFailures')}</option>
+                                <option value="tokens">{t('dashboard.aiMonitoring.sortTokens')}</option>
+                                <option value="calls">{t('dashboard.aiMonitoring.sortCalls')}</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', borderBottom: '1px solid var(--border-subtle)', borderTop: '1px solid var(--border-subtle)' }}>
+                        {[
+                            [t('dashboard.aiMonitoring.calls'), agentStats.data?.calls ?? 0],
+                            [t('dashboard.aiMonitoring.successes'), agentStats.data?.successes ?? 0],
+                            [t('dashboard.aiMonitoring.failures'), agentStats.data?.failures ?? 0],
+                            [t('dashboard.aiMonitoring.tokens'), formatTokens(agentStats.data?.total_tokens ?? 0)],
+                        ].map(([label, value]) => (
+                            <div key={String(label)} style={{ padding: '10px 12px', borderRight: '1px solid var(--border-subtle)' }}>
+                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{label}</div>
+                                <div style={{ marginTop: '2px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>{value}</div>
+                            </div>
+                        ))}
                     </div>
                     {selectedAgent ? (
                         <>

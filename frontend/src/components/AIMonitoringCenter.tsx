@@ -18,7 +18,7 @@ export function AIMonitoringCenter() {
     const isAdmin = user?.role === 'org_admin' || user?.role === 'platform_admin' || !!user?.is_platform_admin;
     const [rangeMode, setRangeMode] = useState<'24h' | 'day'>('24h');
     const [date, setDate] = useState(utcToday);
-    const [sortBy, setSortBy] = useState<AIMonitoringSortBy>('failures');
+    const [sortBy, setSortBy] = useState<AIMonitoringSortBy>('latest');
     const [selectedGroup, setSelectedGroup] = useState<AIGroupStatsRow | null>(null);
     const [selectedAgent, setSelectedAgent] = useState<AIAgentStatsRow | null>(null);
     const [page, setPage] = useState(1);
@@ -123,6 +123,7 @@ export function AIMonitoringCenter() {
                     onChange={(event) => setSortBy(event.target.value as AIMonitoringSortBy)}
                     style={{ fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-primary)' }}
                 >
+                    <option value="latest">{t('dashboard.aiMonitoring.sortLatest', '最新调用')}</option>
                     <option value="failures">{t('dashboard.aiMonitoring.sortFailures')}</option>
                     <option value="tokens">{t('dashboard.aiMonitoring.sortTokens')}</option>
                     <option value="calls">{t('dashboard.aiMonitoring.sortCalls')}</option>

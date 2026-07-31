@@ -21,10 +21,25 @@ def test_fallback_plan_has_one_new_leader_and_public_delegation() -> None:
     assert len(plan.workflow.stages) >= 2
 
 
-def test_fallback_plan_respects_workflow_preset() -> None:
+def test_fallback_plan_includes_sop_announcement() -> None:
     plan = fallback_team_plan("准备一个产品发布", workflow_preset="agile")
+    assert plan.sop is not None
+    assert "协作 SOP" in plan.sop
+    assert "全体 Agent 必须遵循" in plan.sop
+    assert "at" in plan.sop
     assert plan.workflow is not None
-    assert plan.workflow.preset == "agile"
+    assert plan.workflow.stages[0].title in plan.sop
+
+
+def test_build_team_sop_lists_roles_and_stages() -> None:
+    from app.services.team_builder.planning import build_team_sop
+
+    plan = fallback_team_plan("交付低代码平台")
+    sop = build_team_sop(plan)
+    assert "团队群主" in sop
+    assert "交付专员" in sop
+    assert "决策者" in sop
+
 
 
 def test_validate_team_plan_attaches_default_workflow_when_missing() -> None:

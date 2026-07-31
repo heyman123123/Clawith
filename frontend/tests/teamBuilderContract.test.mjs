@@ -23,8 +23,9 @@ test('team builder uses the durable draft and job endpoints with an idempotency 
   assert.match(modal, /createRandomUUID\(\)/);
   assert.match(modal, /POLL_INTERVAL_MS/);
   assert.match(modal, /workflowPreset/);
-  assert.match(modal, /reviseDraft/);
-  assert.match(modal, /teamBuilderWorkflow/);
+  assert.match(modal, /reviseScope/);
+  assert.match(modal, /teamBuilderSop/);
+  assert.match(modal, /teamBuilderReviseContext/);
 });
 
 test('the builder recovers durable draft and job IDs across refreshes', () => {

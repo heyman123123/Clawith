@@ -209,6 +209,7 @@
       "range24h": "Last 24h",
       "rangeDay": "By day",
       "sortBy": "Sort",
+      "sortLatest": "Latest call",
       "sortFailures": "Failures",
       "sortTokens": "Tokens",
       "sortCalls": "Calls",

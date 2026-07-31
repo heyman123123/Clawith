@@ -195,10 +195,10 @@ export default function GroupsPage() {
         .filter((run) => run.can_cancel)
         .map((run) => run.run_id);
     const planningRunVisible = activeRunStates.some(
-        (run) => run.can_cancel && run.system_role === 'group_planning',
+        (run) => run.can_cancel && run.system_role === 'group_planning' && run.status !== 'stale',
     );
     const agentRunVisible = activeRunStates.some(
-        (run) => run.can_cancel && Boolean(run.agent_id),
+        (run) => run.can_cancel && Boolean(run.agent_id) && run.status !== 'stale',
     );
     const isPlanning = planningRunVisible || (awaitingPlannedRuns && !agentRunVisible);
     const runningAgents = useMemo(() => {
@@ -209,7 +209,7 @@ export default function GroupsPage() {
         );
         const seen = new Set<string>();
         return activeRunStates.flatMap((run) => {
-            if (!run.can_cancel || !run.agent_id || seen.has(run.agent_id)) return [];
+            if (!run.can_cancel || run.status === 'stale' || !run.agent_id || seen.has(run.agent_id)) return [];
             const member = membersByAgentId.get(run.agent_id);
             if (!member) return [];
             seen.add(run.agent_id);

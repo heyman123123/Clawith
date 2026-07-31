@@ -65,6 +65,7 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
     const [groupName, setGroupName] = useState('');
     const [workflowPreset, setWorkflowPreset] = useState<Exclude<TeamWorkflowPreset, 'custom'>>('default');
     const [reviseFeedback, setReviseFeedback] = useState('');
+    const [reviseScope, setReviseScope] = useState<'members' | 'workflow' | 'both'>('both');
     const [editablePlan, setEditablePlan] = useState<TeamPlan | null>(null);
     const [showAdvancedJson, setShowAdvancedJson] = useState(false);
     const [planText, setPlanText] = useState('');
@@ -76,6 +77,25 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
     const isProvisioning = Boolean(job) || draft?.status === 'confirmed';
     const leader = useMemo(() => plan?.members.find((member) => member.is_leader), [plan]);
     const step = isProvisioning ? 3 : draft && plan ? 2 : 1;
+    const reviseContextHint = useMemo(() => {
+        if (!plan) return '';
+        const roles = plan.members.map((member) => member.name).join('、');
+        const stages = (plan.workflow?.stages ?? []).map((stage) => stage.title).join(' → ');
+        return t(
+            'groups.teamBuilderReviseContext',
+            '当前：角色 {{roles}}；流程 {{stages}}。可让 AI 增删角色、改职责，或重排阶段/审批门。',
+            { roles: roles || '-', stages: stages || '-' },
+        );
+    }, [plan, t]);
+    const revisePlaceholder = useMemo(() => {
+        if (reviseScope === 'members') {
+            return t('groups.teamBuilderReviseMembersPlaceholder', '例如：增加一个测试角色，把交付专员的职责改成只做前端');
+        }
+        if (reviseScope === 'workflow') {
+            return t('groups.teamBuilderReviseWorkflowPlaceholder', '例如：改成调研→方案→评审→交付，并在评审阶段需要决策者确认');
+        }
+        return t('groups.teamBuilderRevisePlaceholder', '例如：把阶段改成调研→方案→交付，并增加一个测试角色');
+    }, [reviseScope, t]);
 
     useEffect(() => {
         let cancelled = false;
@@ -213,7 +233,7 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
             if (editablePlan) {
                 await teamBuilderApi.updateDraft(draft.id, editablePlan);
             }
-            const nextDraft = await teamBuilderApi.reviseDraft(draft.id, reviseFeedback.trim(), 'both');
+            const nextDraft = await teamBuilderApi.reviseDraft(draft.id, reviseFeedback.trim(), reviseScope);
             applyPlanUpdate(nextDraft);
             setReviseFeedback('');
             persistDraft(nextDraft.id);
@@ -466,13 +486,33 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
                         <label className="team-builder-plan-label" htmlFor="team-builder-revise">
                             {t('groups.teamBuilderRevise', '用 AI 调整方案')}
                         </label>
+                        <p className="team-builder-lead" style={{ marginTop: 0, marginBottom: 8, fontSize: 12, opacity: 0.8 }}>
+                            {reviseContextHint}
+                        </p>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                            {([
+                                ['both', t('groups.teamBuilderReviseScopeBoth', '角色+工作流')],
+                                ['members', t('groups.teamBuilderReviseScopeMembers', '只改角色')],
+                                ['workflow', t('groups.teamBuilderReviseScopeWorkflow', '只改工作流')],
+                            ] as const).map(([value, label]) => (
+                                <button
+                                    key={value}
+                                    type="button"
+                                    className={`btn btn-sm ${reviseScope === value ? 'btn-primary' : ''}`}
+                                    disabled={submitting}
+                                    onClick={() => setReviseScope(value)}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
                         <textarea
                             id="team-builder-revise"
                             className="team-builder-requirement"
-                            rows={2}
+                            rows={3}
                             value={reviseFeedback}
                             onChange={(event) => setReviseFeedback(event.target.value)}
-                            placeholder={t('groups.teamBuilderRevisePlaceholder', '例如：把阶段改成调研→方案→交付，并增加一个测试角色')}
+                            placeholder={revisePlaceholder}
                         />
                         <button
                             type="button"
@@ -483,6 +523,20 @@ export default function TeamBuilderModal({ onClose, onCompleted, embedded = fals
                         >
                             {submitting ? t('common.loading', '加载中...') : t('groups.teamBuilderReviseApply', 'AI 调整')}
                         </button>
+                        <label className="team-builder-plan-label" htmlFor="team-builder-sop" style={{ marginTop: 16 }}>
+                            {t('groups.teamBuilderSop', '群公告 SOP（全体 Agent 必遵）')}
+                        </label>
+                        <p className="team-builder-lead" style={{ marginTop: 0, marginBottom: 8, fontSize: 12, opacity: 0.8 }}>
+                            {t('groups.teamBuilderSopHint', '创建群后会写入群公告，并注入每位被 @ Agent 的上下文。可手工改，或由 AI 调整方案后自动刷新。')}
+                        </p>
+                        <textarea
+                            id="team-builder-sop"
+                            className="team-builder-requirement"
+                            rows={8}
+                            value={editablePlan?.sop ?? plan.sop ?? ''}
+                            onChange={(event) => setEditablePlan((prev) => prev ? { ...prev, sop: event.target.value } : prev)}
+                            spellCheck={false}
+                        />
                     </div>
                     <button
                         type="button"

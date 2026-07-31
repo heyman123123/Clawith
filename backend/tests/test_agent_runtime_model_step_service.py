@@ -2,6 +2,7 @@
 
 import base64
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from dataclasses import replace
 from datetime import UTC, datetime
 import json
@@ -1810,7 +1811,67 @@ async def test_group_mention_validation_fails_closed_for_invalid_group_scope() -
 
 
 @pytest.mark.asyncio
-async def test_group_response_repairs_visible_agent_mention_without_staged_id() -> None:
+async def test_group_response_auto_stages_unique_visible_mentions() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    target_id = str(uuid.uuid4())
+    state["snapshots"] = RunInputSnapshots(
+        session_context={"version": 1, "summary": "shared"},
+        session_context_version=1,
+        recent_session_messages=state["snapshots"].recent_session_messages,
+        related_run_summaries=(),
+        initial_input={"group_context": {"group": {"group_id": str(uuid.uuid4())}}},
+    )
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content="@Target Agent please reply.",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+            finish_reason="stop",
+        )
+
+    with (
+        patch(
+            "app.services.agent_runtime.model_step_service._group_mention_directory",
+            new=AsyncMock(
+                return_value=(
+                    {"Target Agent": {target_id}},
+                    {target_id: "Target Agent"},
+                )
+            ),
+        ),
+        patch(
+            "app.services.agent_runtime.model_step_service.preflight_group_agent_handoff",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    payload=lambda: {"version": 1, "mention_participant_ids": [target_id]}
+                )
+            ),
+        ) as preflight,
+    ):
+        result = await _service(
+            model,
+            agent,
+            _ContextBuilder(_build(initial_input=state["snapshots"].initial_input)),
+            complete,
+        ).complete_once(state, _context(state))
+
+    assert result.intent == "finish"
+    assert result.repair_code is None
+    assert result.finish_content == "@Target Agent please reply."
+    assert result.finish_delivery_intent is not None
+    preflight.assert_awaited_once()
+    assert preflight.await_args.kwargs["mention_participant_ids"] == (target_id,)
+
+
+@pytest.mark.asyncio
+async def test_group_response_repairs_ambiguous_visible_mentions() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)
     agent = _agent(tenant_id)
@@ -1836,8 +1897,13 @@ async def test_group_response_repairs_visible_agent_mention_without_staged_id() 
 
     with (
         patch(
-            "app.services.agent_runtime.model_step_service._group_mention_mismatches",
-            new=AsyncMock(return_value=(("Target Agent",), ())),
+            "app.services.agent_runtime.model_step_service._group_mention_directory",
+            new=AsyncMock(
+                return_value=(
+                    {"Target Agent": {str(uuid.uuid4()), str(uuid.uuid4())}},
+                    {},
+                )
+            ),
         ),
         patch(
             "app.services.agent_runtime.model_step_service.preflight_group_agent_handoff",
@@ -1861,14 +1927,14 @@ async def test_group_response_repairs_visible_agent_mention_without_staged_id() 
 
 
 @pytest.mark.asyncio
-async def test_group_response_repairs_staged_id_without_visible_mention() -> None:
+async def test_group_response_auto_appends_missing_visible_mentions() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)
     agent = _agent(tenant_id)
     state = _state(tenant_id, model, agent)
-    target_id = uuid.uuid4()
+    target_id = str(uuid.uuid4())
     state["lifecycle"]["pending_group_at"] = {
-        "participant_ids": [str(target_id)],
+        "participant_ids": [target_id],
         "tool_call_id": "call-at",
         "staged_at_model_step": 1,
     }
@@ -1893,12 +1959,21 @@ async def test_group_response_repairs_staged_id_without_visible_mention() -> Non
 
     with (
         patch(
-            "app.services.agent_runtime.model_step_service._group_mention_mismatches",
-            new=AsyncMock(return_value=((), ("Target Agent",))),
+            "app.services.agent_runtime.model_step_service._group_mention_directory",
+            new=AsyncMock(
+                return_value=(
+                    {"Target Agent": {target_id}},
+                    {target_id: "Target Agent"},
+                )
+            ),
         ),
         patch(
             "app.services.agent_runtime.model_step_service.preflight_group_agent_handoff",
-            new=AsyncMock(),
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    payload=lambda: {"version": 1, "mention_participant_ids": [target_id]}
+                )
+            ),
         ) as preflight,
     ):
         result = await _service(
@@ -1908,14 +1983,12 @@ async def test_group_response_repairs_staged_id_without_visible_mention() -> Non
             complete,
         ).complete_once(state, _context(state))
 
-    assert result.intent == "text"
-    assert result.repair_code == "invalid_group_at"
-    assert "@Target Agent" in (result.repair_instruction or "")
-    assert "missing from the visible" in (result.repair_instruction or "")
-    preflight.assert_not_awaited()
+    assert result.intent == "finish"
+    assert result.repair_code is None
+    assert "@Target Agent" in (result.finish_content or "")
+    preflight.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_non_group_finish_cannot_bypass_group_handoff_field() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)

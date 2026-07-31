@@ -47,6 +47,7 @@ export interface TeamPlan {
     members: TeamPlanMember[];
     delegations: TeamPlanDelegation[];
     workflow?: TeamPlanWorkflow | null;
+    sop?: string | null;
 }
 
 export interface TeamBuildDraft {

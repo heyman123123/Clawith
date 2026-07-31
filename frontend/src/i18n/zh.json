@@ -216,6 +216,7 @@
       "range24h": "近 24 小时",
       "rangeDay": "按日",
       "sortBy": "排序",
+      "sortLatest": "最新调用",
       "sortFailures": "失败次数",
       "sortTokens": "Token",
       "sortCalls": "调用次数",

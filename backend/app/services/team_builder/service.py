@@ -12,6 +12,7 @@ from app.models.team_builder import TeamBuildDraft, TeamProvisionJob, TeamProvis
 from app.models.user import User
 from app.services.team_builder.errors import TeamBuilderError
 from app.services.team_builder.planning import (
+    build_team_sop,
     generate_team_plan,
     revise_team_plan,
     validate_team_plan,
@@ -144,6 +145,7 @@ async def apply_workflow_preset(
     plan = validate_team_plan(draft.reviewed_plan)
     kind = preset if preset in {"default", "agile", "product_research"} else "default"
     updated = plan.model_copy(update={"workflow": workflow_from_preset(kind, goal=plan.goal)})
+    updated = updated.model_copy(update={"sop": build_team_sop(updated)})
     draft.reviewed_plan = updated.model_dump(mode="json")
     draft.plan_version += 1
     draft.status = "ready"

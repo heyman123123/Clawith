@@ -54,6 +54,7 @@ export interface AIAgentStatsRow {
     successes: number;
     failures: number;
     total_tokens: number;
+    last_called_at?: string | null;
 }
 
 export interface AIAgentStats {
@@ -61,7 +62,7 @@ export interface AIAgentStats {
     date: string | null;
     since: string;
     until: string;
-    sort_by: 'failures' | 'tokens' | 'calls';
+    sort_by: 'latest' | 'failures' | 'tokens' | 'calls';
     order: 'asc' | 'desc';
     group_id?: string | null;
     calls: number;
@@ -78,6 +79,7 @@ export interface AIGroupStatsRow {
     successes: number;
     failures: number;
     total_tokens: number;
+    last_called_at?: string | null;
 }
 
 export interface AIGroupStats {
@@ -85,7 +87,7 @@ export interface AIGroupStats {
     date: string | null;
     since: string;
     until: string;
-    sort_by: 'failures' | 'tokens' | 'calls';
+    sort_by: 'latest' | 'failures' | 'tokens' | 'calls';
     order: 'asc' | 'desc';
     calls: number;
     successes: number;

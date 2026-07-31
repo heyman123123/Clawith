@@ -7,7 +7,7 @@ import type {
     AIInteractionPage,
 } from '../types/aiMonitoring';
 
-export type AIMonitoringSortBy = 'failures' | 'tokens' | 'calls';
+export type AIMonitoringSortBy = 'latest' | 'failures' | 'tokens' | 'calls';
 export type AIMonitoringRange = '24h';
 
 function query(params: Record<string, string | number | undefined | null | boolean>): string {
@@ -44,7 +44,7 @@ export const aiMonitoringApi = {
         fetchJson<AIGroupStats>(`/ai-monitoring/groups/stats${query({
             date: filters?.date,
             range: filters?.date ? undefined : (filters?.range ?? '24h'),
-            sort_by: filters?.sortBy ?? 'failures',
+            sort_by: filters?.sortBy ?? 'latest',
             order: filters?.order ?? 'desc',
         })}`),
     agentStats: (filters?: {
@@ -58,7 +58,7 @@ export const aiMonitoringApi = {
             group_id: filters?.groupId,
             date: filters?.date,
             range: filters?.date ? undefined : (filters?.range ?? '24h'),
-            sort_by: filters?.sortBy ?? 'failures',
+            sort_by: filters?.sortBy ?? 'latest',
             order: filters?.order ?? 'desc',
         })}`),
     groupInteractions: (groupId: string, page = 1, pageSize = 20, filters?: {

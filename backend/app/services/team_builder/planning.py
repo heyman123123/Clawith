@@ -80,6 +80,7 @@ class TeamPlan(BaseModel):
     members: list[TeamPlanMember] = Field(min_length=1, max_length=20)
     delegations: list[TeamPlanDelegation] = Field(default_factory=list, max_length=100)
     workflow: TeamPlanWorkflow | None = None
+    sop: str | None = Field(default=None, max_length=12_000)
 
     @model_validator(mode="after")
     def validate_roster(self) -> TeamPlan:
@@ -94,7 +95,53 @@ class TeamPlan(BaseModel):
                 raise ValueError("delegations must reference roster members")
         if self.workflow is None:
             object.__setattr__(self, "workflow", workflow_from_preset("default", goal=self.goal))
+        if not (self.sop or "").strip():
+            object.__setattr__(self, "sop", build_team_sop(self))
         return self
+
+
+def build_team_sop(plan: TeamPlan) -> str:
+    """Compose the group announcement SOP every Agent must follow."""
+    leader = next((member for member in plan.members if member.is_leader), None)
+    leader_name = leader.name if leader else "群主"
+    member_lines = [
+        f"- **{member.name}**（{'群主' if member.is_leader else '成员'}）：{member.role_description} — {member.responsibility}"
+        for member in plan.members
+    ]
+    workflow = plan.workflow
+    stage_lines: list[str] = []
+    if workflow is not None:
+        for index, stage in enumerate(workflow.stages, start=1):
+            gate = "；需决策者确认后进入下一阶段" if stage.requires_approval else ""
+            stage_lines.append(f"{index}. **{stage.title}**：{stage.goal}{gate}")
+    return "\n".join(
+        [
+            f"# {plan.group_name} · 协作 SOP",
+            "",
+            "## 团队目标",
+            plan.goal.strip() or "推进群协作目标",
+            "",
+            "## 角色与职责",
+            *member_lines,
+            "",
+            "## 工作流阶段",
+            *(stage_lines or ["1. 按群主编排推进当前目标"]),
+            "",
+            "## 全体 Agent 必须遵循",
+            f"1. **群主编排**：{leader_name} 接收人类目标，在群内公开拆解并分派任务；成员不得绕过群主私自改目标。",
+            "2. **公开协作**：重要进展、阻塞、交付必须在群内公开同步，禁止只在私聊闭环。",
+            "3. **@ 协议**：需要唤醒其他 Agent 时，必须先调用 `at` 工具传入其 participant_id，再在正文写可见 `@名字`；禁止只写 @ 名字。",
+            "4. **证据推进**：完成工作后用工作流工具提交证据（submit_evidence 等），不要口头声称完成却不交证据。",
+            "5. **项目级拍板**：阶段审批与项目决策找群内**决策者**，不要把项目拍板推给人类管理员或普通成员。",
+            "6. **例外升级**：涉及对外沟通、外部部署、财务或不确定事项，由决策者私聊人类管理员确认后再执行。",
+            "7. **主动推进**：收到指令立即行动，禁止干等心跳或定时；阻塞要立刻公开说明并 @ 相关角色。",
+            "8. **本公告优先**：本 SOP 注入每位被 @ Agent 的上下文，所有成员必须优先遵守。",
+            "",
+            "## 阶段推进约定",
+            "- 成员交付 → 群主核对与催证据 → 决策者对审批门拍板 → 决策结论公开 @ 群主继续编排。",
+            "- 日常执行问题找群主；项目级是否通过找决策者。",
+        ]
+    )
 
 
 def workflow_from_preset(
@@ -170,10 +217,53 @@ Do not invent workflow stages here; the platform attaches a workflow template se
 
 
 _REVISE_SYSTEM_PROMPT = """You revise an existing Clawith team plan. Return exactly one JSON object, no Markdown.
-Keep the same schema: group_name, goal, assumptions, phases, members, delegations, and optionally workflow.
+Keep the same schema: group_name, goal, assumptions, phases, members, delegations, workflow, and sop.
 workflow has preset (default|agile|product_research|custom), name, and stages[{key,title,goal,requires_approval}].
+sop is the group announcement markdown that every Agent must follow (roles, stage flow, collaboration rules).
 When changing workflow stages set preset to custom. Keep exactly one is_leader. Stage keys must be unique slug ids.
-Honor the revise_scope: members = only roster/delegations; workflow = only workflow; both = either."""
+Honor the revise_scope:
+- members = change roster/delegations; keep workflow unless feedback forces a tiny rename; refresh sop to match roles
+- workflow = change workflow stages/gates; keep members; refresh sop stage section
+- both = adjust roles and/or workflow together based on feedback
+Always treat current_plan as the source of truth. Apply the user's feedback as surgical edits, not a full rewrite
+unless they ask to rebuild. After edits, regenerate sop so it matches the final roles and workflow."""
+
+
+def _revision_focus(plan: TeamPlan) -> dict:
+    """Compact view of the current plan so the model revises roles/workflow intentionally."""
+    workflow = plan.workflow
+    return {
+        "group_name": plan.group_name,
+        "goal": plan.goal,
+        "leaders": [
+            {"member_key": member.member_key, "name": member.name, "responsibility": member.responsibility}
+            for member in plan.members
+            if member.is_leader
+        ],
+        "members": [
+            {
+                "member_key": member.member_key,
+                "name": member.name,
+                "role_description": member.role_description,
+                "responsibility": member.responsibility,
+                "source": member.source,
+                "is_leader": member.is_leader,
+            }
+            for member in plan.members
+        ],
+        "workflow_name": workflow.name if workflow else None,
+        "workflow_preset": workflow.preset if workflow else None,
+        "stages": [
+            {
+                "key": stage.key,
+                "title": stage.title,
+                "goal": stage.goal,
+                "requires_approval": stage.requires_approval,
+            }
+            for stage in (workflow.stages if workflow else [])
+        ],
+        "sop_preview": (plan.sop or "")[:1500],
+    }
 
 
 def _as_text(value: object) -> str | None:
@@ -401,7 +491,7 @@ async def generate_team_plan(
         plan = plan.model_copy(
             update={"workflow": workflow_from_preset(workflow_preset, goal=plan.goal)}
         )
-    return plan
+    return plan.model_copy(update={"sop": build_team_sop(plan)})
 
 
 async def revise_team_plan(
@@ -427,6 +517,12 @@ async def revise_team_plan(
         "requirement": requirement,
         "revise_scope": scope,
         "feedback": note,
+        "instruction": (
+            "Revise the current team based on feedback. Prefer editing existing roles and stages "
+            "instead of inventing an unrelated team. Update sop so the group announcement matches "
+            "the final roster and workflow."
+        ),
+        "current_focus": _revision_focus(current_plan),
         "current_plan": current_plan.model_dump(mode="json"),
         "requesting_user": user.display_name,
     }
@@ -466,4 +562,6 @@ async def revise_team_plan(
             revised = revised.model_copy(
                 update={"workflow": revised.workflow.model_copy(update={"preset": "custom"})}
             )
+    # Keep announcement SOP aligned with the final roster/workflow after scoped merges.
+    revised = revised.model_copy(update={"sop": build_team_sop(revised)})
     return revised
