@@ -77,6 +77,8 @@ class ChatSession(Base):
     agent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True
     )
+    # Orchestrator: when set, this chat session is the Chief 1:1 PM channel (g007)
+    chief_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     # user_id: for P2P sessions this is the user; for group sessions this is the agent creator (placeholder)
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
