@@ -181,7 +181,9 @@ export default function Projects() {
                             {recentDrafts.map((d) => (
                                 <Link
                                     key={d.id}
-                                    to={d.status === 'consumed' ? `/projects/${d.id}` : `/projects/draft/${d.id}`}
+                                    to={d.status === 'consumed' && (d as any).error_detail?.group_id
+                                        ? `/projects/${(d as any).error_detail.group_id}?chiefRunId=${(d as any).error_detail.chief_run_id || ''}&name=${encodeURIComponent(d.group?.name || '')}`
+                                        : `/projects/draft/${d.id}`}
                                     style={{ textDecoration: 'none' }}
                                 >
                                     <Card

@@ -38,6 +38,7 @@ export default function ProjectDetail() {
         );
     }
 
+    const projectName = searchParams.get('name') || '';
     return (
         <div className="orch-fade-in" style={{
             display: 'flex', flexDirection: 'column',
@@ -45,7 +46,7 @@ export default function ProjectDetail() {
             background: 'var(--bg-primary)',
         }}>
             {/* Header */}
-            <ProjectHeader groupId={groupId} />
+            <ProjectHeader groupId={groupId} name={projectName} />
 
             {/* Body: 2-col grid */}
             <div style={{
@@ -90,7 +91,7 @@ export default function ProjectDetail() {
     );
 }
 
-function ProjectHeader({ groupId }: { groupId: string }) {
+function ProjectHeader({ groupId, name }: { groupId: string; name: string }) {
     const { t } = useTranslation();
     // We don't have a /api/groups/{id} endpoint to fetch the group record here.
     // For v1, the header just shows the groupId. A future iteration can add
@@ -114,8 +115,17 @@ function ProjectHeader({ groupId }: { groupId: string }) {
                     {t('projectDetail.workingProject', 'Project')}
                 </span>
             </nav>
-            <div style={{ flex: 1 }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', minWidth: 0, flex: 1, overflow: 'hidden' }}>
+                {name && (
+                    <span style={{
+                        fontSize: 'var(--text-sm)',
+                        fontWeight: 600,
+                        color: 'var(--text-primary)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                    }}>{name}</span>
+                )}
                 <code style={{
                     fontSize: 11,
                     color: 'var(--text-tertiary)',
