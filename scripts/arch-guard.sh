@@ -102,6 +102,50 @@ if [ -d "$ROOT_DIR/frontend/src" ]; then
 fi
 
 # -----------------------------------------------------------------------------
+# RULE: Orchestrator-specific patterns (intent-driven project orchestrator)
+# -----------------------------------------------------------------------------
+ORCHESTRATOR_VIOLATIONS=0
+
+# Chief Runtime should not be started directly from API or product code
+# (must go through CommandWorker dispatching 'start_chief_run' command)
+if [ -d "$ROOT_DIR/backend/app/api" ]; then
+    while read -r line; do
+        [ -z "$line" ] && continue
+        file=$(echo "$line" | cut -d: -f1)
+        # ChiefRunLoop / handle_start_chief_run called directly is a violation;
+        # must use RuntimeCommandIntake.
+        if grep -q "RuntimeCommandInopke\|ChiefRunLoop\b\|handle_start_chief_run" "$file" 2>/dev/null; then
+            report_violation "C1-OrchestratorEntry" "Chief Runtime must be started via RuntimeCommandIntake, not direct call" "$file"
+            ORCHESTRATOR_VIOLATIONS=$((ORCHESTRATOR_VIOLATIONS + 1))
+        fi
+    done < <(grep -rln "RuntimeCommandInopke\|ChiefRunLoop\b\|handle_start_chief_run" "$ROOT_DIR/backend/app/api" 2>/dev/null || true)
+fi
+
+# Frontend must not import axios directly (C4)
+if [ -d "$ROOT_DIR/frontend/src" ]; then
+    while read -r line; do
+        [ -z "$line" ] && continue
+        file=$(echo "$line" | cut -d: -f1)
+        report_violation "C4-NoDirectAxios" "Frontend must use fetchJson wrapper, not direct axios import" "$file"
+        ORCHESTRATOR_VIOLATIONS=$((ORCHESTRATOR_VIOLATIONS + 1))
+    done < <(grep -rnE "^import .*axios|from .axios." "$ROOT_DIR/frontend/src" 2>/dev/null || true)
+fi
+
+# New tables must have tenant_id column (C2)
+ORCHESTRATOR_TABLES="drafts task_cards task_board_events chief_runs task_card_dependencies"
+for table in $ORCHESTRATOR_TABLES; do
+    if docker exec clawith-postgres-1 psql -U clawith -d clawith -tAc "SELECT 1 FROM information_schema.columns WHERE table_name='$table' AND column_name='tenant_id'" 2>/dev/null | grep -q 1; then
+        : # OK
+    else
+        echo "⚠️  WARNING [C2-OrchestratorTables] table '$table' missing tenant_id column"
+    fi
+done
+
+if [ "$ORCHESTRATOR_VIOLATIONS" -gt 0 ]; then
+    VIOLATIONS=$((VIOLATIONS + ORCHESTRATOR_VIOLATIONS))
+fi
+
+# -----------------------------------------------------------------------------
 # Final Verdict
 # -----------------------------------------------------------------------------
 echo ""

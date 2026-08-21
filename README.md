@@ -243,6 +243,82 @@ You can also scan the QR code below to join our community on mobile:
   <img src="assets/Clawith_QRcode.png" alt="Community QR Code" width="200" />
 </p>
 
+## 🧭 Intent-Driven Project Orchestrator
+
+> Describe a goal in natural language; Clawith automatically provisions a
+> Group with a Chief (PM) Agent + executing agents, OKR + task board,
+> and drives execution via progress signals — no manual setup required.
+
+### Quick Start
+
+1. Open the **Projects** page in your tenant
+2. Describe your goal (e.g. "帮我做一个出海 SaaS 获客方案")
+3. Review the LLM-generated Draft (Group + Agents + OKR + Tasks)
+4. Pick template_visibility for any new LLM-generated agent templates
+5. Approve → the system creates the Group and spawns a Chief Runtime
+
+### Key Features
+
+- **Persistent Chief Runtime**: long-lived daemon (run_kind="orchestrator")
+  subscribes to task board events, reviews artifacts, advances OKR by
+  *progress* (not time), and dispatches executing agents.
+- **Progress-driven OKR**: stages advance when artifacts are verified,
+  not on a deadline. All time fields (due_date / scheduled_at / target_window)
+  are opt-in metadata.
+- **Self-evolving task board**: agents create new cards during execution;
+  the Chief reviews and dispatches them. Tasks are not predetermined.
+- **Multi-tenant safe**: every query is scoped by `tenant_id`; templates
+  can be user-private, tenant-private, or public (with admin approval).
+
+### Architecture
+
+```
+[ User Goal in Natural Language ]
+   │
+   ▼
+OrchestratorService (LLM-driven proposal)
+   │  IntentAnalyzer → AgentSelector → GroupPlanner → Draft
+   ▼
+[ Draft Preview UI ]
+   │  user approves + chooses template_visibility
+   ▼
+AtomicCreator (idempotent on draft_id)
+   │  creates Group + Members + OKR + TaskCards
+   │  dispatches start_chief_run via RuntimeCommandIntake
+   ▼
+Chief Runtime (long-lived, persistent)
+   │  EventListener → Reasoner → ActionExecutor
+   │  TaskBoardService + RuntimeCommandIntake for execution
+   ▼
+[ Task Board + Group Chat + Chief 1:1 Chat ]
+```
+
+### Spec & Plan
+
+- Design spec: `docs/superpowers/specs/2026-08-21-intent-driven-project-orchestrator-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-08-21-intent-driven-project-orchestrator.md`
+
+### Configuration
+
+Backend API routers (`backend/app/api/{orchestrator,task_board,template_registry}.py`)
+are intentionally NOT auto-mounted in `main.py`. To activate, add:
+
+```python
+from app.api.orchestrator import router as orchestrator_router
+from app.api.task_board import router as task_board_router
+from app.api.template_registry import router as template_registry_router
+
+app.include_router(orchestrator_router)
+app.include_router(task_board_router)
+app.include_router(template_registry_router)
+```
+
+The Chief Runtime `handle_start_chief_run` in
+`backend/app/services/agent_runtime/orchestrator/command_handler.py`
+must be registered with the existing CommandWorker dispatch table.
+
+---
+
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/image?repos=dataelement/Clawith&type=date&legend=top-left&v=2)](https://www.star-history.com/?repos=dataelement%2FClawith&type=date&legend=top-left)
