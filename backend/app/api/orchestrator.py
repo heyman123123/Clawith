@@ -29,7 +29,7 @@ from app.services.orchestrator.orchestrator_service import OrchestratorService
 from app.services.orchestrator.intent_analyzer import IntentAnalyzer
 from app.services.orchestrator.agent_selector import AgentSelector
 from app.services.orchestrator.group_planner import GroupPlanner
-from app.services.orchestrator.atomic_creator import AtomicCreator, AtomicCreatorError
+
 # Real service wiring
 from app.services.participant_identity import (
     get_or_create_user_participant,
@@ -46,6 +46,7 @@ from app.models.task_card_dependency import TaskCardDependency
 from app.models.okr import OKRKeyResult
 from app.models.user import User as UserModel
 from app.database import async_session
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ async def _resolve_llm_model(tenant_id):
         return m
 
 
-async def _llm_caller_stub(prompt: str) -> str:
+async def _llm_caller(prompt: str) -> str:
     """Real LLM caller using Clawith\'s LLM gateway.
 
     Falls back to empty string on any error so callers use heuristic logic.
@@ -91,7 +92,7 @@ async def _llm_caller_stub(prompt: str) -> str:
     from app.services.llm.utils import get_model_api_key
     from app.services.llm.client import LLMMessage
     from app.services.llm.single_step import complete_llm_once
-    tenant_id = getattr(_llm_caller_stub, "_last_tenant_id", None)
+    tenant_id = getattr(_llm_caller, "_last_tenant_id", None)
     model = await _resolve_llm_model(tenant_id)
     if model is None:
         logger.warning("No enabled LLM model; cannot call real LLM")
@@ -107,7 +108,7 @@ async def _llm_caller_stub(prompt: str) -> str:
         return ""
 
 
-async def _llm_generate_template_stub(category: str, role_gaps: list, user_message: str = "") -> list:
+async def _llm_generate_agent_specs(category: str, role_gaps: list, user_message: str = "") -> list:
     """Real LLM generator: produces a spec for each missing role.
 
     The LLM is asked to invent a Chief-style persona (display name + brief
@@ -126,7 +127,7 @@ async def _llm_generate_template_stub(category: str, role_gaps: list, user_messa
         f"  - system_prompt: a 1-2 sentence system prompt defining what this agent does in the project\n"
         f"Return a JSON array, one object per role. No other text."
     )
-    raw = await _llm_caller_stub(prompt)
+    raw = await _llm_caller(prompt)
     import json
     text = raw.strip()
     if text.startswith("```"):
@@ -175,29 +176,17 @@ async def _template_search(category: str, tenant_id: uuid.UUID | None) -> list[d
 
 async def _service_factory(current_user: User = Depends(get_current_user)) -> OrchestratorService:
     # Pin tenant_id on the LLM stub so real calls resolve a tenant-appropriate model.
-    _llm_caller_stub._last_tenant_id = current_user.tenant_id
+    _llm_caller._last_tenant_id = current_user.tenant_id
     planner = GroupPlanner()
-    planner.llm_caller = _llm_caller_stub
+    planner.llm_caller = _llm_caller
     return OrchestratorService(
-        intent_analyzer=IntentAnalyzer(llm_caller=_llm_caller_stub),
+        intent_analyzer=IntentAnalyzer(llm_caller=_llm_caller),
         agent_selector=AgentSelector(
             template_search=_template_search,
-            llm_generate_template=_llm_generate_template_stub,
+            llm_generate_template=_llm_generate_agent_specs,
         ),
         group_planner=planner,
     )
-
-
-def _atomic_creator_factory() -> AtomicCreator:
-    """AtomicCreator with default no-op services.
-
-    Operators should override `group_service` / `agent_service` /
-    `okr_service` / `task_board_service` / `command_intake_service`
-    at deployment to wire real downstream services. With default None
-    deps, AtomicCreator still persists Draft.status='consumed' and
-    returns deterministic IDs.
-    """
-    return AtomicCreator()
 
 
 # Lazy import to avoid circular
@@ -276,12 +265,60 @@ async def approve_draft(
 
 
 
+async def _start_chief_runtime_in_background(
+    *,
+    chief_run_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    chief_agent_id: uuid.UUID,
+    group_id: uuid.UUID,
+) -> None:
+    """Spawn the OrchestratorRunLoop for a newly-created Chief Run.
+
+    The loop subscribes to task board events and drives the Chief agent.
+    On any error during startup, the chief_runs row is marked as
+    'degraded' so the UI can surface that the Chief is not yet active.
+    """
+    try:
+        from app.services.agent_runtime.orchestrator.orchestrator_run import (
+            OrchestratorRunLoop,
+        )
+        from app.services.agent_runtime.orchestrator.event_listener import (
+            EventListener,
+        )
+        from app.services.agent_runtime.orchestrator.reasoner import (
+            Reasoner,
+        )
+        from app.services.agent_runtime.orchestrator.action_executor import (
+            ActionExecutor,
+        )
+
+        loop = OrchestratorRunLoop(
+            event_listener=EventListener(),
+            reasoner=Reasoner(llm_caller=_llm_caller),
+            action_executor=ActionExecutor(),
+        )
+        await loop.run(group_id=group_id, tenant_id=tenant_id)
+    except Exception as exc:
+        logger.exception(f"Chief Runtime startup failed for {chief_run_id}: {exc}")
+        async with async_session() as db:
+            from app.models.chief_run import ChiefRun
+            cr = await db.get(ChiefRun, chief_run_id)
+            if cr is not None:
+                cr.status = "degraded"
+                cr.last_failure_reason = f"startup: {str(exc)[:200]}"
+                await db.commit()
+
+
 async def _create_project_from_draft(
     draft_id: uuid.UUID,
     tenant_id: uuid.UUID,
     user_id: uuid.UUID,
     visibility: str,
 ) -> dict:
+    # Capture the chief_run_id for background startup. The local var is
+    # closed over by the background task; we collect it after commit.
+    _bg_chief_run_id: list = []
+    _bg_tenant_id: list = []
     """Materialize a Draft into a real Group + Agents + OKR + TaskCards + ChiefRun.
 
     Idempotent on draft_id: subsequent calls return the previously-created IDs
@@ -328,11 +365,14 @@ async def _create_project_from_draft(
             creator_user.avatar_url,
         )
 
-        # 2. Create Agent rows (one per member, including chief)
-        #    - For "chief-of-staff": always create a new Agent
-        #    - For template-backed members: also create a new Agent (cloned from template)
-        #    - For LLM-generated members: also create new Agent
+        # 2. Create Agent rows (one per member, including chief).
+        #    For LLM-generated members, also persist a new AgentTemplate so
+        #    future users can find + reuse them. The chosen visibility
+        #    (from DraftPreview) controls how the template is shared.
         agent_ids: list[uuid.UUID] = []
+        if visibility not in {"user_private", "tenant_private", "public"}:
+            visibility = "user_private"
+        needs_admin_approval = visibility in {"tenant_private", "public"}
         for m in members_meta:
             agent_id = uuid.uuid4()
             template_id = m.get("template_id")
@@ -356,6 +396,26 @@ async def _create_project_from_draft(
             )
             db.add(agent)
             agent_ids.append(agent_id)
+
+            # Persist LLM-generated members as reusable templates
+            if m.get("is_new_template"):
+                db.add(AgentTemplate(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id if visibility != "public" else None,
+                    name=m.get("name", "Agent"),
+                    description=m.get("system_prompt", "")[:500],
+                    icon="🤖",
+                    category=m.get("role", "general"),
+                    soul_template=m.get("system_prompt", ""),
+                    default_skills=[],
+                    default_mcp_servers=[],
+                    default_autonomy_policy={},
+                    capability_bullets=[],
+                    is_builtin=False,
+                    created_by=user_id,
+                    template_visibility=visibility,
+                    approval_state="draft" if needs_admin_approval else "approved",
+                ))
         await db.flush()
 
         # 3. Create Group + GroupMembers (creator as manager, agents as members)
@@ -454,6 +514,8 @@ async def _create_project_from_draft(
             status="active",
         )
         db.add(chief_run)
+        _bg_chief_run_id.append(chief_run.id)
+        _bg_tenant_id.append(tenant_id)
 
         # 7. Persist materialized IDs back to the draft for replay
         draft_row.status = "consumed"
@@ -467,6 +529,18 @@ async def _create_project_from_draft(
             "agent_ids": [str(a) for a in agent_ids],
         }
         await db.commit()
+
+        # Actually start the Chief Runtime in the background so it can
+        # begin listening for task events, monitoring OKR progress, etc.
+        if _bg_chief_run_id and _bg_tenant_id:
+            asyncio.create_task(
+                _start_chief_runtime_in_background(
+                    chief_run_id=_bg_chief_run_id[0],
+                    tenant_id=_bg_tenant_id[0],
+                    chief_agent_id=chief_agent_id,
+                    group_id=group.id,
+                )
+            )
 
         return {
             "draft_id": draft_id,

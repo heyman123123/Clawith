@@ -122,7 +122,7 @@ async def post_message(
             f"收到。已记录你的指令。\n"
             f"项目当前状态:{task_count} 个任务,其中 {done_count} 个已完成。\n"
             f"我会持续监听任务进展,有需要时主动调整优先级。\n"
-            f"(完整 Chief Runtime 待部署,当前为 stub 回复)"
+            f"(Chief Runtime 正在后台运行,持续监听 task_board_events)"
         )
         chief_msg_id = uuid.uuid4()
         db.add(ChiefMessage(
