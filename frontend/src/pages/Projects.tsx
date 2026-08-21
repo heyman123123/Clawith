@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { orchestratorApi, Draft } from '../services/orchestrator';
 
-export function Projects() {
+export default function Projects() {
   const [message, setMessage] = useState('');
   const navigate = useNavigate();
 

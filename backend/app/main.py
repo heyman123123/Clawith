@@ -415,6 +415,9 @@ from app.api.triggers import router as triggers_router
 from app.api.focus import router as focus_router
 
 from app.api.atlassian import router as atlassian_router
+from app.api.orchestrator import router as orchestrator_router
+from app.api.task_board import router as task_board_router
+from app.api.template_registry import router as template_registry_router
 
 from app.api.webhooks import router as webhooks_router
 from app.api.notification import router as notification_router
@@ -456,6 +459,9 @@ app.include_router(wechat_router, prefix=settings.API_PREFIX)
 app.include_router(teams_router, prefix=settings.API_PREFIX)
 
 app.include_router(atlassian_router, prefix=settings.API_PREFIX)
+app.include_router(orchestrator_router)  # router has its own /api/orchestrator prefix
+app.include_router(task_board_router)  # router has its own /api/task-board prefix
+app.include_router(template_registry_router)  # router has its own /api/template-registry prefix
 
 app.include_router(triggers_router)
 app.include_router(focus_router, prefix=settings.API_PREFIX)

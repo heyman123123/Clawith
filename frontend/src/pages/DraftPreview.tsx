@@ -5,7 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { orchestratorApi, Draft } from '../services/orchestrator';
 
-export function DraftPreview() {
+export default function DraftPreview() {
   const { draftId } = useParams<{ draftId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -26,7 +26,7 @@ export function DraftPreview() {
     mutationFn: () => orchestratorApi.createDraft(draftId!),
     onSuccess: (project) => {
       qc.invalidateQueries({ queryKey: ['projects'] });
-      navigate(`/projects/${project.group_id}`);
+      navigate(`/projects/${project.group_id}?chiefRunId=${project.chief_run_id}`);
     },
   });
 

@@ -4,6 +4,7 @@
 import React, { useState, DragEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { taskBoardApi, TaskCard, TaskColumn } from '../../../services/taskBoard';
+import { useAuthStore } from '../../../stores';
 
 const COLUMNS: TaskColumn[] = ['backlog', 'in_progress', 'blocked', 'review', 'done'];
 const COLUMN_LABEL: Record<TaskColumn, string> = {
@@ -17,6 +18,7 @@ const COLUMN_LABEL: Record<TaskColumn, string> = {
 export function TaskBoard({ tenantId, groupId }: { tenantId: string; groupId: string }) {
   const qc = useQueryClient();
   const [draggedId, setDraggedId] = useState<string | null>(null);
+  const userId = useAuthStore((s) => s.user?.id) ?? '';
 
   const cardsQuery = useQuery<TaskCard[]>({
     queryKey: ['task-board', groupId],
@@ -27,7 +29,7 @@ export function TaskBoard({ tenantId, groupId }: { tenantId: string; groupId: st
     mutationFn: ({ cardId, toColumn, expectedVersion }: { cardId: string; toColumn: TaskColumn; expectedVersion: number }) =>
       taskBoardApi.moveCard(cardId, {
         tenant_id: tenantId,
-        actor_id: '00000000-0000-0000-0000-000000000000', // TODO: from auth
+        actor_id: userId,
         actor_type: 'user',
         to_column: toColumn,
         expected_version: expectedVersion,

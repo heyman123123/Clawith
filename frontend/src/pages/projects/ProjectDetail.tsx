@@ -1,29 +1,37 @@
 // ProjectDetail page - shows Task Board + Chief Chat for a single Group.
+// tenant_id comes from useAuthStore; chief_run_id is appended by DraftPreview
+// when navigating to /projects/{groupId}?chiefRunId={chief_run_id}.
 import React from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { TaskBoard } from './components/TaskBoard';
 import { ChiefChat } from './components/ChiefChat';
+import { useAuthStore } from '../../stores';
 
-// In real wiring, fetch group + chief_run_id from /api/groups/{id}.
-// For v1, the orchestrator's createDraft response includes both.
-export function ProjectDetail() {
+export default function ProjectDetail() {
   const { groupId } = useParams<{ groupId: string }>();
-
-  // TODO: fetch group + chief_run_id from API; placeholder UUIDs for v1 demo.
-  const tenantId = '00000000-0000-0000-0000-000000000000';
-  const chiefRunId = '00000000-0000-0000-0000-000000000000';
+  const [searchParams] = useSearchParams();
+  const tenantId = useAuthStore((s) => s.user?.tenant_id) ?? '';
+  // DraftPreview appends `chiefRunId` after successful creation so we don't
+  // need an extra /api/groups/{id} round-trip just to find the Chief.
+  const chiefRunId = searchParams.get('chiefRunId') ?? '';
 
   return (
     <div className="grid grid-cols-3 gap-4 h-[calc(100vh-80px)]">
       <div className="col-span-2 overflow-hidden">
-        {groupId ? (
+        {groupId && tenantId ? (
           <TaskBoard tenantId={tenantId} groupId={groupId} />
         ) : (
-          <div className="p-8">未指定 Group</div>
+          <div className="p-8 text-gray-500">未指定 Group</div>
         )}
       </div>
       <div className="p-4">
-        <ChiefChat chiefRunId={chiefRunId} />
+        {chiefRunId ? (
+          <ChiefChat chiefRunId={chiefRunId} />
+        ) : (
+          <div className="text-xs text-gray-400 p-2">
+            Chief Run ID 未设置(草稿创建完成后会自动关联)
+          </div>
+        )}
       </div>
     </div>
   );

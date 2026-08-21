@@ -22,6 +22,7 @@ import {
     IconBell,
     IconBuildingMonument,
     IconUsersGroup,
+    IconRocket,
     IconSearch,
     IconX,
     IconPin,
@@ -1069,6 +1070,12 @@ export default function Layout() {
                                 <IconBuildingMonument size={14} stroke={1.5} />
                             </span>
                             <span className="sidebar-item-text">{t('nav.plaza', 'Plaza')}</span>
+                        </NavLink>
+                        <NavLink to="/projects" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconRocket size={14} stroke={1.5} />
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.projects', 'Projects')}</span>
                         </NavLink>
                         <NavLink to="/groups" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
                             <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>

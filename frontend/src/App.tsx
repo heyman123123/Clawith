@@ -23,6 +23,9 @@ const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
 const SSOEntry = lazy(() => import('./pages/SSOEntry'));
 const OKR = lazy(() => import('./pages/OKR'));
 const GroupsPage = lazy(() => import('./pages/groups/GroupsPage'));
+const Projects = lazy(() => import('./pages/Projects'));
+const DraftPreview = lazy(() => import('./pages/DraftPreview'));
+const ProjectDetail = lazy(() => import('./pages/projects/ProjectDetail'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const token = useAuthStore((s) => s.token);
@@ -296,6 +299,9 @@ export default function App() {
                     <Route path="messages" element={<Messages />} />
                     <Route path="enterprise" element={<CompanyAdminRoute><EnterpriseSettings /></CompanyAdminRoute>} />
                     <Route path="okr" element={<OKR />} />
+                    <Route path="projects" element={<Projects />} />
+                    <Route path="projects/draft/:draftId" element={<DraftPreview />} />
+                    <Route path="projects/:groupId" element={<ProjectDetail />} />
                     <Route path="invitations" element={<InvitationCodes />} />
                     <Route path="admin/platform-settings" element={<AdminCompanies />} />
                 </Route>
