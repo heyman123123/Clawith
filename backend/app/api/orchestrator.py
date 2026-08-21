@@ -56,31 +56,93 @@ router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
 # Service wiring (single shared OrchestratorService instance)
 # ---------------------------------------------------------------------------
 
+async def _resolve_llm_model(tenant_id):
+    """Find a usable LLM model for this tenant.
+
+    Prefer the tenant's default_model_id, then any enabled model.
+    """
+    from sqlalchemy import select
+    from app.models.llm import LLMModel
+    async with async_session() as db:
+        from app.models.tenant import Tenant
+        t_row = (await db.execute(
+            select(Tenant).where(Tenant.id == tenant_id)
+        )).scalar_one_or_none()
+        if t_row and getattr(t_row, "default_model_id", None):
+            m = (await db.execute(
+                select(LLMModel).where(
+                    LLMModel.id == t_row.default_model_id,
+                    LLMModel.enabled == True,
+                )
+            )).scalar_one_or_none()
+            if m:
+                return m
+        m = (await db.execute(
+            select(LLMModel).where(LLMModel.enabled == True).limit(1)
+        )).scalar_one_or_none()
+        return m
+
+
 async def _llm_caller_stub(prompt: str) -> str:
-    """Stub LLM caller.
+    """Real LLM caller using Clawith\'s LLM gateway.
 
-    Replace this with the real LLM gateway client (`app.services.llm.gateway`)
-    at deployment. Returns a deterministic JSON payload that IntentAnalyzer
-    parses successfully so the end-to-end flow works without a real LLM.
+    Falls back to empty string on any error so callers use heuristic logic.
     """
-    return '{"intent_category": "other", "scope_summary": "User-defined project goal", "key_constraints": []}'
+    from app.services.llm.utils import get_model_api_key
+    from app.services.llm.client import LLMMessage
+    from app.services.llm.single_step import complete_llm_once
+    tenant_id = getattr(_llm_caller_stub, "_last_tenant_id", None)
+    model = await _resolve_llm_model(tenant_id)
+    if model is None:
+        logger.warning("No enabled LLM model; cannot call real LLM")
+        return ""
+    try:
+        step = await complete_llm_once(
+            model,
+            [LLMMessage(role="user", content=prompt)],
+        )
+        return step.content or ""
+    except Exception as exc:
+        logger.warning(f"Real LLM call failed: {exc}")
+        return ""
 
 
-async def _llm_generate_template_stub(category: str, role_gaps: list) -> list:
-    """Stub for LLM-generated agent templates.
+async def _llm_generate_template_stub(category: str, role_gaps: list, user_message: str = "") -> list:
+    """Real LLM generator: produces a spec for each missing role.
 
-    Returns a single placeholder template that the operator can later
-    regenerate via /api/template-registry/* endpoints.
+    The LLM is asked to invent a Chief-style persona (display name + brief
+    system prompt) per role. The DraftPreview UI can rename them before
+    approval, so the LLM only needs to seed reasonable starting points.
     """
+    if not role_gaps:
+        return []
+    prompt = (
+        f"You are a project staffing assistant. The user goal is: {user_message!r}.\n"
+        f"The project category is: {category}.\n"
+        f"We need to fill these missing agent roles: {role_gaps}.\n"
+        f"For each role, return a JSON object with:\n"
+        f"  - role: one of {role_gaps}\n"
+        f"  - name: a short human-readable display name (1-3 words)\n"
+        f"  - system_prompt: a 1-2 sentence system prompt defining what this agent does in the project\n"
+        f"Return a JSON array, one object per role. No other text."
+    )
+    raw = await _llm_caller_stub(prompt)
+    import json
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(l for l in lines if not l.startswith("```"))
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return [d for d in data if isinstance(d, dict) and "role" in d][:len(role_gaps)]
+    except Exception:
+        pass
+    # Fallback: deterministic placeholders
     return [
-        {
-            "role": role_gaps[0] if role_gaps else "assistant",
-            "name": f"AI {role_gaps[0] if role_gaps else 'Assistant'}",
-            "system_prompt": f"You are an AI agent specialized for {category}.",
-        },
-        *[{
-            "role": g, "name": f"AI {g}", "system_prompt": f"You handle {g} tasks."
-        } for g in role_gaps[1:]],
+        {"role": g, "name": f"AI {g.replace('-', ' ').title()}",
+         "system_prompt": f"You are an AI agent specialized for {g} in a {category} project."}
+        for g in role_gaps
     ]
 
 
@@ -111,14 +173,18 @@ async def _template_search(category: str, tenant_id: uuid.UUID | None) -> list[d
     ]
 
 
-async def _service_factory() -> OrchestratorService:
+async def _service_factory(current_user: User = Depends(get_current_user)) -> OrchestratorService:
+    # Pin tenant_id on the LLM stub so real calls resolve a tenant-appropriate model.
+    _llm_caller_stub._last_tenant_id = current_user.tenant_id
+    planner = GroupPlanner()
+    planner.llm_caller = _llm_caller_stub
     return OrchestratorService(
         intent_analyzer=IntentAnalyzer(llm_caller=_llm_caller_stub),
         agent_selector=AgentSelector(
             template_search=_template_search,
             llm_generate_template=_llm_generate_template_stub,
         ),
-        group_planner=GroupPlanner(),
+        group_planner=planner,
     )
 
 
