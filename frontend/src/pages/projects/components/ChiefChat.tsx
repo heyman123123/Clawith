@@ -25,17 +25,24 @@ export function ChiefChat({ chiefRunId }: { chiefRunId: string }) {
     const scrollRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
 
-    const messagesQuery = useQuery({
+    const messagesQuery = useQuery<Array<{id: string; from: 'user' | 'chief'; content: string; created_at: string}>>({
         queryKey: ['chief-chat', chiefRunId],
         queryFn: () => chiefApi.getMessages(chiefRunId),
         refetchInterval: 5000,
+        retry: 1,
     });
 
     const send = useMutation({
         mutationFn: (content: string) => chiefApi.postMessage(chiefRunId, content),
         onSuccess: () => {
             setInput('');
+            // Invalidate immediately + refetch shortly to pick up the chief reply
             qc.invalidateQueries({ queryKey: ['chief-chat', chiefRunId] });
+            setTimeout(() => qc.invalidateQueries({ queryKey: ['chief-chat', chiefRunId] }), 500);
+        },
+        onError: (err: any) => {
+            // graceful: log and don't crash
+            console.error('Chief send failed:', err);
         },
     });
 

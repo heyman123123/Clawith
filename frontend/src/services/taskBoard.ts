@@ -10,6 +10,7 @@ export interface TaskCard {
   position: number;
   version: number;
   assignee_agent_id?: string | null;
+  assignee_agent_name?: string | null;
   artifact_paths?: string[];
 }
 

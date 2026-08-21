@@ -63,6 +63,16 @@ async def list_cards(
             cards = await dao.list_cards_by_assignee(uuid.UUID(agent_id), tenant_id=uuid.UUID(tenant_id))
         else:
             raise HTTPException(status_code=400, detail="group_id or agent_id required")
+        # Batch-resolve agent names to avoid N+1 (one query for all assignees)
+        from app.models.agent import Agent
+        from sqlalchemy import select
+        assignee_ids = {c.assignee_agent_id for c in cards if c.assignee_agent_id}
+        agent_name_by_id: dict = {}
+        if assignee_ids:
+            rows = (await db.execute(
+                select(Agent.id, Agent.name).where(Agent.id.in_(list(assignee_ids)))
+            )).all()
+            agent_name_by_id = {row[0]: row[1] for row in rows}
         return [
             {
                 "id": str(c.id),
@@ -71,6 +81,7 @@ async def list_cards(
                 "position": c.position,
                 "version": c.version,
                 "assignee_agent_id": str(c.assignee_agent_id) if c.assignee_agent_id else None,
+                "assignee_agent_name": agent_name_by_id.get(c.assignee_agent_id) if c.assignee_agent_id else None,
                 "artifact_paths": list(c.artifact_paths or []),
             }
             for c in cards
@@ -116,7 +127,18 @@ async def assign_card(card_id: uuid.UUID, payload: dict):
             actor_type=payload.get("actor_type", "user"),
             expected_version=expected_version,
         )
-        return {"id": str(card.id), "assignee_agent_id": str(card.assignee_agent_id), "version": card.version}
+        assignee_name = None
+        if card.assignee_agent_id:
+            from app.models.agent import Agent
+            from sqlalchemy import select
+            row = (await db.execute(select(Agent.name).where(Agent.id == card.assignee_agent_id))).scalar_one_or_none()
+            assignee_name = row
+        return {
+            "id": str(card.id),
+            "assignee_agent_id": str(card.assignee_agent_id) if card.assignee_agent_id else None,
+            "assignee_agent_name": assignee_name,
+            "version": card.version,
+        }
     except TaskBoardError as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message})
 

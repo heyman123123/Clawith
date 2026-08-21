@@ -251,7 +251,10 @@ export function TaskBoard({ tenantId, groupId }: { tenantId: string; groupId: st
                                                     }}>{card.title}</div>
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 6 }}>
                                                         {card.assignee_agent_id && (
-                                                            <AgentAvatar name={card.assignee_agent_id.slice(0, 8)} size={16}/>
+                                                            <AgentAvatar
+                                                                name={card.assignee_agent_name || card.assignee_agent_id.slice(0, 8)}
+                                                                size={16}
+                                                            />
                                                         )}
                                                         {(card.artifact_paths?.length ?? 0) > 0 && (
                                                             <span style={{
