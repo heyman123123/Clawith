@@ -1,12 +1,23 @@
-"""AtomicCreator: idempotently materializes a Draft into Group + Members + OKR + Tasks
-+ dispatches start_chief_run command via RuntimeCommandIntake.
+"""AtomicCreator: LEGACY reference implementation.
 
-Idempotency key = draft_id. All downstream resources use SHA256-derived UUIDs
-from (draft_id, suffix) so retries with the same draft_id produce identical
-DB state without duplicate rows.
+Superseded by ``_create_project_from_draft()`` in
+``backend/app/api/orchestrator.py``, which performs direct SQLAlchemy
+inserts (faster, no service-injection ceremony, fully exercised by
+end-to-end smoke tests).
 
-C1 compliance: Does NOT call LangGraph nodes directly. Chief Runtime start is
-dispatched through RuntimeCommandIntake as a 'start_chief_run' command.
+AtomicCreator was the original spec-compliant path that delegates to
+injected group_service / agent_service / okr_service / task_board_service /
+command_intake_service. Operators can still wire those services and
+re-enable this path if they want to route through the existing service
+layer rather than direct DB inserts.
+
+The deterministic-UUID helpers (``deterministic_uuid``) and the
+draft-replay logic in ``_replay_result`` are still useful; the rest is
+vestigial.
+
+Idempotency key = draft_id. All downstream resources use SHA256-derived
+UUIDs from (draft_id, suffix) so retries with the same draft_id produce
+identical DB state without duplicate rows.
 """
 from __future__ import annotations
 import hashlib
