@@ -1799,7 +1799,9 @@
     "toast": {
       "collapseDetails": "收起详情",
       "viewDetails": "查看详情"
-    }
+    },
+    "refresh": "刷新",
+    "send": "发送"
   },
   "admin": {
     "title": "公司管理",
@@ -2340,5 +2342,76 @@
     "emptyBody": "在与数字员工的对话里点「沉淀为经验」，或直接新建，把团队踩过的坑沉淀下来——AI 会在相关任务中自动检索复用。",
     "sidebarEmpty": "有了已发布经验后，这里会显示热门贡献者与标签。",
     "mineEmpty": "这个分类下还没有经验。"
+  },
+  "projects": {
+    "eyebrow": "AI 项目编排",
+    "title": "把目标交给 AI 团队",
+    "subtitle": "用一句话描述目标,Clawith 自动组建 Agent 团队、搭建群聊、拆解 OKR 与任务,由 Chief Agent 协调执行。",
+    "composerLabel": "描述你的目标",
+    "composerPlaceholder": "例如:帮我做一个出海 SaaS 获客方案",
+    "generate": "生成草稿",
+    "generating": "生成草稿中…",
+    "cmdHint": "⌘ + Enter 快速提交",
+    "errorGenerate": "生成失败",
+    "untitledDraft": "未命名草稿",
+    "recentDrafts": "最近的草稿",
+    "agents": "个 Agent",
+    "tasks": "个任务",
+    "examples": "或者从示例开始"
+  },
+  "draft": {
+    "loading": "加载草稿中…",
+    "loadErrorTitle": "无法加载草稿",
+    "projects": "项目",
+    "draft": "草稿",
+    "created": "已创建",
+    "id": "ID",
+    "untitled": "未命名项目",
+    "members": "成员",
+    "keyResults": "关键结果",
+    "tasks": "任务",
+    "newTemplates": "新模板",
+    "okr": "OKR",
+    "initialTasks": "初始任务",
+    "target": "目标",
+    "visibilityLabel": "新模板共享范围",
+    "visibilityHint": "只影响本次由 LLM 生成的新模板;已存在的模板不受影响。",
+    "approve": "审核草稿",
+    "approveAndCreate": "批准并创建",
+    "processing": "处理中…",
+    "errorApprove": "审核失败",
+    "errorCreate": "创建失败",
+    "alreadyCreated": "该项目已创建。",
+    "llmGenerated": "由 LLM 生成"
+  },
+  "taskBoard": {
+    "title": "任务看板",
+    "loading": "加载看板…",
+    "loadErrorTitle": "加载失败",
+    "totalTasks": "共 {{n}} 个任务",
+    "addCard": "添加卡片",
+    "addCardHint": "任务由 Orchestrator 草稿创建;手动添加即将推出",
+    "emptyDone": "完成后移到这里",
+    "emptyCol": "拖动卡片到这里",
+    "moveFailedTitle": "移动失败",
+    "versionConflict": "卡片已被其他人修改,请刷新",
+    "you": "你"
+  },
+  "chiefChat": {
+    "title": "Chief of Staff",
+    "online": "在线",
+    "subtitle": "协调者 — 不直接执行,只审核与派单",
+    "loading": "加载对话…",
+    "emptyTitle": "Chief 等待你的指令",
+    "emptyDesc": "告诉 Chief 你的优先级、风险或需要他重点关注的事项。",
+    "placeholder": "给 Chief 发指令… (Enter 发送,Shift+Enter 换行)",
+    "newMessages": "新消息"
+  },
+  "projectDetail": {
+    "loadingAuth": "加载中…",
+    "noGroup": "未指定 Group",
+    "workingProject": "项目",
+    "noChiefRun": "Chief 1:1 聊天暂未启用",
+    "noChiefRunHint": "当 Group 通过 Orchestrator 草稿创建时,会自动关联一个 Chief Run。"
   }
 }
