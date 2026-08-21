@@ -80,13 +80,30 @@ class AtomicCreator:
 
         # Step 1-4: delegate to injected services (real impls in W2.7 wiring)
         if self.group_service is not None:
-            await self.group_service.create(
-                tenant_id=tenant_id,
-                group_id=group_id,
-                name=payload.get("group", {}).get("name", "新项目"),
-                description=payload.get("group", {}).get("description", ""),
-                created_by=draft_row.user_id,
-            )
+            # group_service: callable(db, tenant_id, creator_participant_id, name, description, member_participant_ids) -> Group
+            # We have to fetch/create the creator participant first.
+            from app.services.participant_identity import get_or_create_user_participant
+            from app.models.user import User
+            creator_user = await db.get(User, draft_row.user_id)
+            if creator_user is not None:
+                creator_part = await get_or_create_user_participant(
+                    db,
+                    creator_user.id,
+                    creator_user.display_name,
+                    creator_user.avatar_url,
+                )
+                member_parts: list[uuid.UUID] = []
+                for m in payload.get("members", []):
+                    # for now we treat each member as the creator until agents are created below
+                    pass
+                await self.group_service(
+                    db,
+                    tenant_id=tenant_id,
+                    creator_participant_id=creator_part.id,
+                    name=payload.get("group", {}).get("name", "新项目"),
+                    description=payload.get("group", {}).get("description", ""),
+                    member_participant_ids=member_parts,
+                )
         if self.agent_service is not None:
             for m in payload.get("members", []):
                 await self.agent_service.create(
