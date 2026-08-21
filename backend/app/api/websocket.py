@@ -1161,7 +1161,7 @@ class WebSocketChatHandler:
             await self.websocket.send_json(
                 _runtime_error_packet(
                     code=getattr(exc, "code", "runtime_stream_failed"),
-                    message="Runtime execution continues, but its live event stream was interrupted.",
+                    message="Live event stream interrupted; the runtime continues running in the background. The page will reconnect automatically.",
                     agent_id=self.agent_id,
                     stage="stream",
                     run_id=intake.handle.run_id,
