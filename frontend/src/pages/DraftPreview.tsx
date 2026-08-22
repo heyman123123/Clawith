@@ -53,7 +53,7 @@ export default function DraftPreview() {
         mutationFn: () => orchestratorApi.createDraft(draftId!),
         onSuccess: (project) => {
             qc.invalidateQueries({ queryKey: ['orchestrator-drafts'] });
-            navigate(`/projects/${project.group_id}?chiefRunId=${project.chief_run_id}&name=${encodeURIComponent(draft?.group?.name || '')}`);
+            navigate(`/groups/${project.group_id}?session=${project.session_id || ''}&name=${encodeURIComponent(draft?.group?.name || '')}`);
         },
     });
 

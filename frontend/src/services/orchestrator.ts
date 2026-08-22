@@ -59,9 +59,10 @@ export interface Draft {
 export interface ProjectCreated {
   draft_id: string;
   group_id: string;
+  session_id?: string;
   chief_agent_id: string;
-  chief_run_id: string;
-  task_card_ids: string[];
+  chief_run_id?: string;
+  task_card_ids?: string[];
   okr_objective_id?: string | null;
 }
 

@@ -1,6 +1,6 @@
-"""Tenant-scoped HTTP boundary for native group chats."""
-
 from __future__ import annotations
+
+import logging
 
 import uuid
 from datetime import UTC, datetime
@@ -45,6 +45,8 @@ from app.services.participant_identity import get_or_create_user_participant
 from app.services.storage import guess_content_type
 from app.dao import agent_dao, user_dao
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
@@ -514,32 +516,35 @@ async def create_group(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant_id = _tenant_id(current_user)
-    participant = await _current_participant(db, current_user)
-    try:
-        group = await group_chat_service.create_group(
+        from app.database import async_session
+        tenant_id = _tenant_id(current_user)
+        async with async_session() as db:
+            participant = await _current_participant(db, current_user)
+        try:
+            group = await group_chat_service.create_group(
+                db,
+                tenant_id=tenant_id,
+                creator_participant_id=participant.id,
+                name=body.name,
+                description=body.description,
+                member_participant_ids=body.member_participant_ids,
+            )
+        except GroupChatServiceError as exc:
+            raise _translate_domain_error(exc) from exc
+        _stage_audit(
             db,
+            current_user=current_user,
+            action="group:create",
             tenant_id=tenant_id,
-            creator_participant_id=participant.id,
-            name=body.name,
-            description=body.description,
-            member_participant_ids=body.member_participant_ids,
+            group_id=group.id,
+            details={
+                "member_participant_ids": [
+                    str(participant_id) for participant_id in body.member_participant_ids
+                ]
+            },
         )
-    except GroupChatServiceError as exc:
-        raise _translate_domain_error(exc) from exc
-    _stage_audit(
-        db,
-        current_user=current_user,
-        action="group:create",
-        tenant_id=tenant_id,
-        group_id=group.id,
-        details={
-            "member_participant_ids": [
-                str(participant_id) for participant_id in body.member_participant_ids
-            ]
-        },
-    )
-    return group
+        return group
+
 
 
 @router.get("", response_model=list[GroupOut])
@@ -954,33 +959,31 @@ async def list_group_messages(
     group_id: uuid.UUID,
     session_id: uuid.UUID,
     limit: Annotated[int, Query(ge=1, le=500)] = 20,
-    before: Annotated[
-        str | None,
-        Query(description="Cursor '<created_at>|<id>' for the first excluded position"),
-    ] = None,
-    after: Annotated[
-        str | None,
-        Query(description="Cursor '<created_at>|<id>' for the last seen position"),
-    ] = None,
+    before: Annotated[str | None, Query()] = None,
+    after: Annotated[str | None, Query()] = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
+    """List messages in a group session. Uses a fresh async_session per call
+    to avoid connection-pool transaction-snapshot staleness from stale reads.
+    """
+    from app.database import async_session
     tenant_id = _tenant_id(current_user)
-    participant = await _current_participant(db, current_user)
-    try:
-        messages = await group_message_service.list_group_messages(
-            db,
-            tenant_id=tenant_id,
-            group_id=group_id,
-            session_id=session_id,
-            viewer_participant_id=participant.id,
-            limit=limit,
-            before=_parse_message_cursor(before, parameter="before"),
-            after=_parse_message_cursor(after, parameter="after"),
-        )
-    except GroupMessageServiceError as exc:
-        raise _translate_message_error(exc) from exc
-    return await _message_outputs(db, messages)
+    async with async_session() as db:
+        try:
+            participant = await _current_participant(db, current_user)
+            messages = await group_message_service.list_group_messages(
+                db,
+                tenant_id=tenant_id,
+                group_id=group_id,
+                session_id=session_id,
+                viewer_participant_id=participant.id,
+                limit=limit,
+                before=_parse_message_cursor(before, parameter="before"),
+                after=_parse_message_cursor(after, parameter="after"),
+            )
+        except GroupMessageServiceError as exc:
+            raise _translate_message_error(exc) from exc
+        return await _message_outputs(db, messages)
 
 
 @router.post(

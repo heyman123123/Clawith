@@ -182,7 +182,7 @@ export default function Projects() {
                                 <Link
                                     key={d.id}
                                     to={d.status === 'consumed' && (d as any).error_detail?.group_id
-                                        ? `/projects/${(d as any).error_detail.group_id}?chiefRunId=${(d as any).error_detail.chief_run_id || ''}&name=${encodeURIComponent(d.group?.name || '')}`
+                                        ? `/groups/${(d as any).error_detail.group_id}?name=${encodeURIComponent(d.group?.name || '')}`
                                         : `/projects/draft/${d.id}`}
                                     style={{ textDecoration: 'none' }}
                                 >
